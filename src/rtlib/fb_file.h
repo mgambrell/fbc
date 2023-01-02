@@ -387,7 +387,7 @@ static __inline__ size_t FB_FREAD_LARGE( void *ptr, size_t nbytes, FILE *stream 
          return total;
       }
 
-      ptr += FREAD_CHUNK_SIZE;
+      ptr = (void*)((char*)ptr + FREAD_CHUNK_SIZE);
       nbytes -= FREAD_CHUNK_SIZE;
    }
 
@@ -414,7 +414,7 @@ static __inline__ size_t FB_FWRITE_LARGE( const void *ptr, size_t nbytes, FILE *
          return total;
       }
 
-      ptr += FWRITE_CHUNK_SIZE;
+      ptr = (void*)((char*)ptr + FWRITE_CHUNK_SIZE);
       nbytes -= FWRITE_CHUNK_SIZE;
    }
 

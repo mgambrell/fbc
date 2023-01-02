@@ -21,6 +21,9 @@
 
 #include "fb.h"
 
+/* I have no idea what to do about this yet */
+#ifndef HOST_FB_BLACKBOX
+
 #if defined DISABLE_FFI || defined HOST_DOS || (!defined HOST_X86 && !defined HOST_X86_64)
 
 FBTHREAD *fb_ThreadCall( void *proc, int abi, ssize_t stack_size, int num_args, ... )
@@ -237,5 +240,7 @@ static FBCALL void threadproc( void *param )
     free( info->ffi_arg_types );
     free( info );
 }
+
+#endif
 
 #endif

@@ -2,6 +2,8 @@
 #define __FB_CONFIG_H__
 
 #if defined HOST_XBOX
+#elif defined HOST_FB_BLACKBOX
+#include "fb_blackbox_config.h"
 #elif defined __DJGPP__
 	#define HOST_DOS
 	#define HOST_DJGPP

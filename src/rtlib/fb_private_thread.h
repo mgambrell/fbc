@@ -8,6 +8,10 @@
 	struct _FBMUTEX {
 		pthread_mutex_t id;
 	};
+#elif defined HOST_FB_BLACKBOX
+	struct _FBMUTEX {
+		void* opaque;
+	};
 #elif defined HOST_WIN32
 	#include <windows.h>
 	struct _FBMUTEX {
@@ -58,6 +62,8 @@ struct _FBTHREAD {
 	void *opaque;
 #elif defined HOST_UNIX
 	pthread_t id;
+#elif defined HOST_FB_BLACKBOX
+	void* opaque;
 #elif defined HOST_WIN32
 	HANDLE id;
 #elif defined HOST_XBOX
