@@ -80,8 +80,14 @@
 	((int) ((((unsigned) (unsigned char) (ch)) << 8) + \
 	        (unsigned) (unsigned char) (FB_EXT_CHAR)))
 
+#ifndef MIN
 #define MIN(a,b)		((a) < (b) ? (a) : (b))
+#endif
+
+#ifndef MAX
 #define MAX(a,b)		((a) > (b) ? (a) : (b))
+#endif
+
 #define MID(a,b,c)		MIN(MAX((a), (b)), (c))
 #define CINT(x)			((x) > 0.0 ? (int)((x) + 0.5) : (int)((x) - 0.5))
 
