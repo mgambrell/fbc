@@ -820,7 +820,7 @@ private function hCheckParam _
 		'' try constructor first - but only if byval parameter
 		if( symbGetParamMode( param ) = FB_PARAMMODE_BYVAL ) then
 			proc = symbFindCtorOvlProc( symbGetSubtype( param ), n->l, symbGetParamMode( param ), _
-			                            @err_num, FB_SYMBLOOKUPOPT_NO_CAST )
+			                            @err_num, FB_SYMBFINDOPT_NO_CAST )
 
 			if( proc <> NULL ) then
 				return hCheckUDTParam( param, n )
@@ -1029,6 +1029,12 @@ function astNewARG _
 	'' optional/default?
 	if( arg = NULL ) then
 		arg = hCreateOptArg( param )
+
+		'' still NULL? then hCreateOptArg() failed
+		if( arg = NULL ) then
+			function = NULL
+			exit function
+		end if
 	end if
 
 	if( dtype = FB_DATATYPE_INVALID ) then
@@ -1049,6 +1055,7 @@ function astNewARG _
 			else
 				errReportParam( parent->sym, parent->call.args+1, NULL, FB_ERRMSG_ILLEGALASSIGNMENT )
 			end if
+			function = NULL
 			exit function
 		end if
 	end if

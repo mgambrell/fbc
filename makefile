@@ -105,6 +105,7 @@
 #   BUILD_PREFIX     automatically set depending on the target but can override for special builds where the
 #                    build tools have different file naming than the target to build (i.e. cross compiling)
 #   DISABLE_GAS64_DEBUG    use "-d DISABLE_GAS64_DEBUG" (see below)
+#   DISABLE_STDCXX_PATH    tells fbc to not search for some libstdc++/libc++ depending on target platform
 # compiler source code configuration (FBCFLAGS, FBLFLAGS):
 #   -d ENABLE_STANDALONE     build for a self-contained installation
 #   -d ENABLE_SUFFIX=-0.24   assume FB's lib dir uses the given suffix (non-standalone only)
@@ -113,6 +114,7 @@
 #   -d ENABLE_STRIPALL       configure fbc to pass down '--strip-all' to linker by default
 #   -d FBSHA1=some-sha-1     store 'some-sha-1' in the compiler for version information
 #   -d DISABLE_GAS64_DEBUG   disable gas64 debugging comments in asm files even if __FB_DEBUG__ is defined (-g)
+#   -d DISABLE_STDCXX_PATH    tells fbc to not search for some libstdc++/libc++ depending on target platform
 #
 # internal makefile configuration (but can override):
 #   libsubdir       override the library directory - default is set depending on TARGET
@@ -372,6 +374,14 @@ ifneq ($(filter freebsd dragonfly linux netbsd openbsd solaris,$(TARGET_OS)),)
   endif
 endif
 
+# disable .ident directive on windows targets
+# when present, identification strings are added to every object module and
+# each .ident instance adds to the resulting executable even if the strings
+# are identical
+ifneq ($(filter win32 win64,$(TARGET_OS)),)
+  CFLAGS += -fno-ident
+endif
+
 ifneq ($(filter cygwin dos win32,$(TARGET_OS)),)
   EXEEXT := .exe
   INSTALL_PROGRAM := cp
@@ -570,6 +580,9 @@ else
 endif
 ifdef DISABLE_GAS64_DEBUG
   ALLFBCFLAGS += -d DISABLE_GAS64_DEBUG
+endif
+ifdef DISABLE_STDCXX_PATH
+  ALLFBCFLAGS += -d DISABLE_STDCXX_PATH
 endif
 
 ALLFBCFLAGS += $(FBCFLAGS) $(FBFLAGS)
@@ -1162,7 +1175,7 @@ bindist:
 	# Docs
 	cp $(rootdir)changelog.txt $(rootdir)readme.txt $(FBPACKAGE)
 	mkdir $(FBPACKAGE)/doc
-	cp $(rootdir)doc/fbc.1 $(rootdir)doc/gpl.txt $(rootdir)doc/lgpl.txt $(FBPACKAGE)/doc
+	cp $(rootdir)doc/fbc.1 $(rootdir)doc/gpl.txt $(rootdir)doc/lgpl.txt $(rootdir)doc/fdl-1.2.txt $(FBPACKAGE)/doc
     ifneq ($(filter win32 win64,$(TARGET_OS)),)
       ifdef ENABLE_STANDALONE
 	cp $(rootdir)doc/GoRC.txt $(rootdir)doc/libffi-license.txt $(FBPACKAGE)/doc
@@ -1386,7 +1399,7 @@ else
   BOOTSTRAP_CFLAGS := -nostdinc
   BOOTSTRAP_CFLAGS += -Wall -Wno-unused-label -Wno-unused-function -Wno-unused-variable
   BOOTSTRAP_CFLAGS += -Wno-unused-but-set-variable -Wno-main
-  BOOTSTRAP_CFLAGS += -fno-strict-aliasing -frounding-math -fwrapv
+  BOOTSTRAP_CFLAGS += -fno-strict-aliasing -frounding-math -fwrapv -fno-ident
   BOOTSTRAP_CFLAGS += -Wfatal-errors
   BOOTSTRAP_OBJ := $(patsubst %.c,%.o,$(sort $(wildcard bootstrap/$(FBTARGET)/*.c)))
   $(BOOTSTRAP_OBJ): %.o: %.c

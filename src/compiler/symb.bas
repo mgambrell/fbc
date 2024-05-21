@@ -48,20 +48,11 @@ declare sub         symbKeywordTypeInit ( )
 
 declare function hGetNamespacePrefix( byval sym as FBSYMBOL ptr ) as string
 
-declare function hLookupImportList _
-	( _
-		byval ns as FBSYMBOL ptr, _
-		byval id as const zstring ptr, _
-		byval index as uinteger _
-	) as FBSYMCHAIN ptr
-
-declare function hLookupImportListByParents _
-	( _
-		byval ns as FBSYMBOL ptr, _
-		byval id as const zstring ptr, _
-		byval index as uinteger _
-	) as FBSYMCHAIN ptr
-
+'' options when looking up symbols
+enum FB_SYMBLOOKUPOPT
+	FB_SYMBLOOKUPOPT_NONE          = &h00000000
+	FB_SYMBLOOKUPOPT_PARENTS       = &h00000001  '' only search in parents and return inherited symbols
+end enum
 
 ''globals
 	dim shared as SYMBCTX symb
@@ -885,19 +876,255 @@ function symbNewChainpool _
 
 end function
 
-/'
-!!!TODO!!! - clean up code for lookups
-refactor the duplicated code in:
-	- symbLookupNS()
-	- symbLookupTypeNS()
-	- symbLookup()
-	- symbLookupAt()
-	- hLookupImportList()
-	- hLookupImportListByParents()
-'/
+'':::::
+private function hLookupImportList _
+	( _
+		byval ns as FBSYMBOL ptr, _
+		byval id as const zstring ptr, _
+		byval index as uinteger, _
+		byval options as FB_SYMBLOOKUPOPT = FB_SYMBLOOKUPOPT_NONE _
+	) as FBSYMCHAIN ptr
+
+	dim as FBSYMBOL ptr parent = any
+	dim as FBSYMCHAIN ptr head = NULL, tail = NULL
+	dim as FBSYMCHAIN ptr chain_ = any
+	dim as integer add = any
+
+	'' for each namespace imported by this ns..
+	dim as FBSYMBOL ptr imp_ = symbGetCompImportHead( ns )
+	do while( imp_ <> NULL )
+		dim as FBSYMBOL ptr sym = _
+			hashLookupEx _
+			( _
+				@symbGetCompHashTb( _
+				symbGetImportNamespc( imp_ ) ).tb, _
+				id, _
+				index _
+			)
+
+		if( sym <> NULL ) then
+			chain_ = chainpoolNext()
+			add = FALSE
+
+			if( (options and FB_SYMBLOOKUPOPT_PARENTS) <> 0 ) then
+				'' only add the symbol if the symbol is imported from
+				'' a parent namespace that is a base of the given
+				'' namespace
+				parent = symbGetParent( sym )
+				select case symbGetType( parent )
+				case FB_DATATYPE_STRUCT ', FB_DATATYPE_CLASS
+					if( symbGetUDTBaseLevel( ns, parent ) > 0 ) then
+						add = TRUE
+					end if
+				case FB_DATATYPE_ENUM
+					add = TRUE
+				end select
+			else
+				add = TRUE
+			end if
+
+			if( add = TRUE ) then
+				chain_->sym = sym
+				chain_->next = NULL
+				chain_->isimport = TRUE
+
+				if( head = NULL ) then
+					head = chain_
+				else
+					tail->next = chain_
+					'' it's ambiguous, instead of returning just the current head
+					'' which would indicate that access is ambiguous, keep going
+					'' and return all of the matches so we can show a better error
+					'' message
+				end if
+
+				tail = chain_
+			end if
+		end if
+
+		imp_ = symbGetImportNext( imp_ )
+	loop
+
+	return head
+end function
 
 '':::::
-function symbLookupNS _
+private function hsymbLookupNS _
+	( _
+		byval id as zstring ptr, _
+		byref tk as FB_TOKEN, _
+		byref tk_class as FB_TKCLASS, _
+		byval hashtb as FBHASHTB ptr, _
+		byval index as uinteger _
+	) as FBSYMCHAIN ptr
+
+	dim as FBSYMBOL ptr sym = any, first_ancestor = NULL
+	dim as FBSYMCHAIN ptr chain_ = any, imp_chain = any
+
+	'' any symbol not in the global namespace or we are already in the global namespace?
+	'' check the whole list before we check the imports
+	hashtb = symb.hashlist.tail
+	do
+		sym = hashLookupEx( @hashtb->tb, id, index )
+		while( sym )
+			'' return if it's not the global ns (as in C++, any nested
+			'' symbol has precedence over any imported one, even if the
+			'' latter was imported in the current ns)
+			if( hashtb->owner <> @symbGetGlobalNamespc( ) ) then
+				return symbNewChainpool( sym )
+			else
+				'' also if we are at the global ns, no need to check the imports
+				if( symbGetCurrentNamespc( ) = @symbGetGlobalNamespc( ) ) then
+					return symbNewChainpool( sym )
+				else
+					if( first_ancestor = NULL ) then
+						first_ancestor = sym
+					end if
+				end if
+			end if
+			sym = sym->hash.next
+		wend
+		hashtb = hashtb->prev
+	loop while( hashtb <> NULL )
+
+	'' imports?
+	imp_chain = hashLookupEx( @symb.imphashtb, id, index )
+	if( imp_chain <> NULL ) then
+
+		'' We have both an ancestor (which was reached directly in the current
+		'' namespace, plus we also have imports.
+		'' !!!TODO!!! scoped+non-explicit enums are going to give us trouble here
+		'' because the enum member is imported in to the current namespace
+		'' The choices are:
+		'' - always return the first_ancestor found
+		'' - return the first_ancestor + imports, and give ambiguous errors
+		'' - something else where we search the imports for enums
+		'' For now, return the first ancestor and all imports
+
+		if( first_ancestor ) then
+			chain_ = symbNewChainpool( first_ancestor )
+			chain_->next = imp_chain
+			return chain_
+		end if
+
+		'' No ancestor? Just return the imports.
+		return imp_chain
+	end if
+
+	'' no imports? return only the first ancestor (if we already found it)
+	if( first_ancestor ) then
+		return symbNewChainpool( first_ancestor )
+	end if
+
+	'' never found
+	return NULL
+
+end function
+
+'':::::
+private function hsymbLookupTypeNS _
+	( _
+		byval id as zstring ptr, _
+		byref tk as FB_TOKEN, _
+		byref tk_class as FB_TKCLASS, _
+		byval hashtb as FBHASHTB ptr, _
+		byval index as uinteger _
+	) as FBSYMCHAIN ptr
+
+	dim as FBSYMBOL ptr sym = any, parent = any, ns = any
+	dim as FBSYMCHAIN ptr chain_ = any, imp_chain = any
+
+	assert( symbGetCurrentNamespc( ) <> NULL )
+
+	'' Search locals - if we are in a procedure, and the symbol can be found
+	'' directly, return the first one on the top of the stack
+	hashtb = symb.hashlist.tail
+	do
+		sym = hashLookupEx( @hashtb->tb, id, index )
+		while( sym )
+			if( symbIsLocal( sym ) ) then
+				return symbNewChainpool( sym )
+			end if
+			sym = sym->hash.next
+		wend
+		hashtb = hashtb->prev
+	loop while( hashtb <> NULL )
+
+	'' Search symbols in the UDT's namespace
+	ns = symbGetCurrentNamespc( )
+
+	'' search in UDT's (TYPE or CLASS) hash tb first
+	sym = hashLookupEx( @symbGetCompHashTb( ns ).tb, id, index )
+
+	'' don't access locals in a TYPE's namespace
+	while( sym )
+		if( symbIsLocal( sym ) ) then
+			sym = sym->hash.next
+		else
+			exit while
+		end if
+	wend
+
+	'' Found the symbol in the type's namespace?
+	if( sym ) then
+		chain_ = symbNewChainpool( sym )
+		return chain_
+	end if
+
+	'' Search symbols in the the UDT's imports, but only if inherieted from
+	'' a parent UDT - don't check imports from non-UDT namespaces
+
+	'' we already know that the current namespace is a TYPE
+	ns = symbGetCurrentNamespc( )
+
+	if( (symbGetCompExt( ns ) <> NULL) and (symbGetCompImportHead( ns ) <> NULL) ) then
+		chain_ = hLookupImportList( ns, id, index )
+		sym = NULL
+
+		'' search UDT members
+		while ( chain_ )
+			sym = chain_->sym
+			while( sym )
+				parent = symbGetParent( sym )
+				select case symbGetType( parent )
+				case FB_DATATYPE_STRUCT ', FB_DATATYPE_CLASS
+					if( symbGetUDTBaseLevel( ns, parent ) > 0 ) then
+						return symbNewChainpool( chain_->sym )
+					end if
+				case FB_DATATYPE_ENUM
+					'' !!!TODO!!! scoped+non-explicit enums?
+					'' They will probably need special treatment
+					'' or we need to confirm they don't
+				end select
+				sym = sym->hash.next
+			wend
+
+			chain_ = symbChainGetNext( chain_ )
+		wend
+
+	end if
+
+	'' it's not any local or inherited UDT member, so we can now
+	'' just search the current namespace for the first symbol found
+	hashtb = symb.hashlist.tail
+	do
+		sym = hashLookupEx( @hashtb->tb, id, index )
+		if( sym ) then
+			return symbNewChainpool( sym )
+		end if
+		hashtb = hashtb->prev
+	loop while( hashtb <> NULL )
+
+	'' still nothing? just return all the imports, which should only be from
+	'' using statements
+	imp_chain = hashLookupEx( @symb.imphashtb, id, index )
+
+	return imp_chain
+
+end function
+
+'':::::
+function symbLookup _
 	( _
 		byval id as zstring ptr, _
 		byref tk as FB_TOKEN, _
@@ -905,7 +1132,6 @@ function symbLookupNS _
 	) as FBSYMCHAIN ptr
 
 	static as zstring * FB_MAXNAMELEN+1 sname
-	dim as FBSYMBOL ptr first_ancestor = NULL
 
 	'' assume it's an unknown identifier
 	tk = FB_TK_ID
@@ -945,231 +1171,15 @@ function symbLookupNS _
 		hashtb = hashtb->prev
 	loop while( hashtb <> NULL )
 
-	'' any symbol not in the global namespace or we are already in the global namespace?
-	'' check the whole list before we check the imports
-	hashtb = symb.hashlist.tail
-	do
-		dim as FBSYMBOL ptr sym = hashLookupEx( @hashtb->tb, id, index )
-		while( sym )
-			'' return if it's not the global ns (as in C++, any nested
-			'' symbol has precedence over any imported one, even if the
-			'' latter was imported in the current ns)
-			if( hashtb->owner <> @symbGetGlobalNamespc( ) ) then
-				return symbNewChainpool( sym )
-			else
-				'' also if we are at the global ns, no need to check the imports
-				if( symbGetCurrentNamespc( ) = @symbGetGlobalNamespc( ) ) then
-					return symbNewChainpool( sym )
-				else
-					if( first_ancestor = NULL ) then
-						first_ancestor = sym
-					end if
-				end if
-			end if
-			sym = sym->hash.next
-		wend
-		hashtb = hashtb->prev
-	loop while( hashtb <> NULL )
-
-	'' imports?
-	dim as FBSYMCHAIN ptr imp_chain = hashLookupEx( @symb.imphashtb, id, index )
-	if( imp_chain <> NULL ) then
-
-		'' We have both an ancestor (which was reached directly in the current
-		'' namespace, plus we also have imports.
-		'' !!!TODO!!! scoped+non-explicit enums are going to give us trouble here
-		'' because the enum member is imported in to the current namespace
-		'' The choices are:
-		'' - always return the first_ancestor found
-		'' - return the first_ancestor + imports, and give ambiguous errors
-		'' - something else where we search the imports for enums
-		'' For now, return the first ancestor and all imports
-
-		if( first_ancestor ) then
-			dim as FBSYMCHAIN ptr chain_ = symbNewChainpool( first_ancestor )
-			chain_->next = imp_chain
-			return chain_
-		end if
-
-		'' No ancestor? Just return the imports.
-		return imp_chain
-	end if
-
-	'' no imports? return only the first ancestor (if we already found it)
-	if( first_ancestor ) then
-		return symbNewChainpool( first_ancestor )
-	end if
-
-	'' never found
-	return NULL
-
-end function
-
-'':::::
-function symbLookupTypeNS _
-	( _
-		byval id as zstring ptr, _
-		byref tk as FB_TOKEN, _
-		byref tk_class as FB_TKCLASS _
-	) as FBSYMCHAIN ptr
-
-	assert( symbGetCurrentNamespc( ) <> NULL )
-
-	static as zstring * FB_MAXNAMELEN+1 sname
-	dim as FBSYMBOL ptr first_ancestor = NULL
-
-	'' assume it's an unknown identifier
-	tk = FB_TK_ID
-	tk_class = FB_TKCLASS_IDENTIFIER
-
-	hUcase( *id, sname )
-	id = @sname
-
-	dim as uinteger index = hashHash( id )
-
-	'' for each nested hash tb, starting from last
-	dim as FBHASHTB ptr hashtb = any
-
-	'' symbLookup() is used where we don't have an explicit namespace
-	'' and we need to use the context of the lexer/parser to start our search
-	''
-	'' Make multiple passes on the hash lists to find the symbol.
-	'' Because symbols are added in the order that they are defined,
-	'' in some cases we can't just take the first symbol we find.
-
-	scope
-		'' keyword?
-		hashtb = symb.hashlist.tail
-		do
-			dim as FBSYMBOL ptr sym = hashLookupEx( @hashtb->tb, id, index )
-			while( sym )
-				if( sym->class = FB_SYMBCLASS_KEYWORD ) then
-					tk = sym->key.id
-					tk_class = sym->key.tkclass
-					'' return if it's a KEYWORD or a OPERATOR token, they
-					'' can't never be redefined, even inside namespaces
-					if( tk_class <> FB_TKCLASS_QUIRKWD ) then
-						return symbNewChainpool( sym )
-					end if
-				end if
-				sym = sym->hash.next
-			wend
-			hashtb = hashtb->prev
-		loop while( hashtb <> NULL )
-	end scope
-
-	scope
-		'' Search locals - if we are in a procedure, and the symbol can be found
-		'' directly, return the first one on the top of the stack
-		hashtb = symb.hashlist.tail
-		do
-			dim as FBSYMBOL ptr sym = hashLookupEx( @hashtb->tb, id, index )
-			while( sym )
-				if( symbIsLocal( sym ) ) then
-					return symbNewChainpool( sym )
-				end if
-				sym = sym->hash.next
-			wend
-			hashtb = hashtb->prev
-		loop while( hashtb <> NULL )
-	end scope
-
-	scope
-		'' Search symbols in the UDT's namespace
-		dim as FBSYMBOL ptr ns = symbGetCurrentNamespc( )
-
-		'' search in UDT's (TYPE or CLASS) hash tb first
-		dim as FBSYMBOL ptr sym = hashLookupEx( @symbGetCompHashTb( ns ).tb, id, index )
-
-		'' don't access locals in a TYPE's namespace
-		while( sym )
-			if( symbIsLocal( sym ) ) then
-				sym = sym->hash.next
-			else
-				exit while
-			end if
-		wend
-
-		'' Found the symbol in the type's namespace?
-		if( sym ) then
-			dim as FBSYMCHAIN ptr chain_ = symbNewChainpool( sym )
-			return chain_
-		end if
-	end scope
-
-	scope
-		'' Search symbols in the the UDT's imports, but only if inherieted from
-		'' a parent UDT - don't check imports from non-UDT namespaces
-
-		'' we already know that the current namespace is a TYPE
-		dim as FBSYMBOL ptr ns = symbGetCurrentNamespc( )
-
-		if( (symbGetCompExt( ns ) <> NULL) and (symbGetCompImportHead( ns ) <> NULL) ) then
-			dim as FBSYMCHAIN ptr chain_ = hLookupImportList( ns, id, index )
-			dim as FBSYMBOL ptr sym = NULL
-
-			'' search UDT members
-			while ( chain_ )
-				sym = chain_->sym
-				while( sym )
-					dim as FBSYMBOL ptr parent = symbGetParent( sym )
-					select case symbGetType( parent )
-					case FB_DATATYPE_STRUCT ', FB_DATATYPE_CLASS
-						if( symbGetUDTBaseLevel( ns, parent ) > 0 ) then
-							return symbNewChainpool( chain_->sym )
-						end if
-					case FB_DATATYPE_ENUM
-						'' !!!TODO!!! scoped+non-explicit enums?
-						'' They will probably need special treatment
-						'' or we need to confirm they don't
-					end select
-					sym = sym->hash.next
-				wend
-
-				chain_ = symbChainGetNext( chain_ )
-			wend
-
-		end if
-	end scope
-
-	scope
-		'' it's not any local or inherited UDT member, so we can now
-		'' just search the current namespace for the first symbol found
-		hashtb = symb.hashlist.tail
-		do
-			dim as FBSYMBOL ptr sym = hashLookupEx( @hashtb->tb, id, index )
-			if( sym ) then
-				return symbNewChainpool( sym )
-			end if
-			hashtb = hashtb->prev
-		loop while( hashtb <> NULL )
-	end scope
-
-	'' still nothing? just return all the imports, which should only be from
-	'' using statements
-	dim as FBSYMCHAIN ptr imp_chain = hashLookupEx( @symb.imphashtb, id, index )
-
-	return imp_chain
-
-end function
-
-'':::::
-function symbLookup _
-	( _
-		byval id as zstring ptr, _
-		byref tk as FB_TOKEN, _
-		byref tk_class as FB_TKCLASS _
-	) as FBSYMCHAIN ptr
-
 	'' In a TYPE's namespace?
 	if( symbGetCurrentNamespc( ) <> NULL ) then
 		select case symbGetClass( symbGetCurrentNamespc( ) )
 		case FB_SYMBCLASS_STRUCT, FB_SYMBCLASS_CLASS
-			return symbLookupTypeNS( id, tk, tk_class )
+			return hsymbLookupTypeNS( id, tk, tk_class, hashtb, index )
 		end select
 	end if
 
-	return symbLookupNS( id, tk, tk_class )
+	return hsymbLookupNS( id, tk, tk_class, hashtb, index )
 
 end function
 
@@ -1219,118 +1229,6 @@ private function hLookupImportHash _
 
 		chain_ = chain_->next
 	loop while( chain_ <> NULL )
-
-	return head
-
-end function
-
-'':::::
-private function hLookupImportList _
-	( _
-		byval ns as FBSYMBOL ptr, _
-		byval id as const zstring ptr, _
-		byval index as uinteger _
-	) as FBSYMCHAIN ptr
-
-	dim as FBSYMCHAIN ptr head = NULL, tail = NULL
-
-	'' for each namespace imported by this ns..
-	dim as FBSYMBOL ptr imp_ = symbGetCompImportHead( ns )
-	do while( imp_ <> NULL )
-		dim as FBSYMBOL ptr sym = _
-			hashLookupEx _
-			( _
-				@symbGetCompHashTb( _
-				symbGetImportNamespc( imp_ ) ).tb, _
-				id, _
-				index _
-			)
-
-		if( sym <> NULL ) then
-			dim as FBSYMCHAIN ptr chain_ = chainpoolNext()
-
-			chain_->sym = sym
-			chain_->next = NULL
-			chain_->isimport = TRUE
-
-			if( head = NULL ) then
-				head = chain_
-			else
-				tail->next = chain_
-				'' it's ambiguous, instead of returning just the current head
-				'' which would indicate that access is ambiguous, keep going
-				'' and return all of the matches so we can show a better error
-				'' message
-			end if
-
-			tail = chain_
-		end if
-
-		imp_ = symbGetImportNext( imp_ )
-	loop
-
-	return head
-
-end function
-
-'':::::
-private function hLookupImportListByParents _
-	( _
-		byval ns as FBSYMBOL ptr, _
-		byval id as const zstring ptr, _
-		byval index as uinteger _
-	) as FBSYMCHAIN ptr
-
-	dim as FBSYMCHAIN ptr head = NULL, tail = NULL
-
-	'' for each namespace imported by this ns..
-	dim as FBSYMBOL ptr imp_ = symbGetCompImportHead( ns )
-	do while( imp_ <> NULL )
-		dim as FBSYMBOL ptr sym = _
-			hashLookupEx _
-			( _
-				@symbGetCompHashTb( _
-				symbGetImportNamespc( imp_ ) ).tb, _
-				id, _
-				index _
-			)
-
-		if( sym <> NULL ) then
-			dim as FBSYMCHAIN ptr chain_ = chainpoolNext()
-			dim add as integer = FALSE
-
-			dim as FBSYMBOL ptr parent = symbGetParent( sym )
-			select case symbGetType( parent )
-			case FB_DATATYPE_STRUCT ', FB_DATATYPE_CLASS
-				if( symbGetUDTBaseLevel( ns, parent ) > 0 ) then
-					add = true
-				end if
-			case FB_DATATYPE_ENUM
-				add = true
-			end select
-
-			if( add = TRUE ) then
-
-				chain_->sym = sym
-				chain_->next = NULL
-				chain_->isimport = TRUE
-
-				if( head = NULL ) then
-					head = chain_
-				else
-					tail->next = chain_
-					'' it's ambiguous, instead of returning just the current head
-					'' which would indicate that access is ambiguous, keep going
-					'' and return all of the matches so we can show a better error
-					'' message
-				end if
-
-				tail = chain_
-			end if
-		end if
-
-		imp_ = symbGetImportNext( imp_ )
-	loop
 
 	return head
 
@@ -1402,7 +1300,7 @@ function symbLookupAt _
 	'' Are we in a type's namespace?  Only search for inherited members
 	select case symbGetClass( ns )
 	case FB_SYMBCLASS_STRUCT, FB_SYMBCLASS_CLASS
-		return hLookupImportListByParents( ns, id, index )
+		return hLookupImportList( ns, id, index, FB_SYMBLOOKUPOPT_PARENTS )
 	end select
 
 	return hLookupImportList( ns, id, index )
@@ -2277,6 +2175,47 @@ function symbIsParentNamespace _
 
 end function
 
+private function hsymbCheckAccessParent _
+	( _
+		byval sym as FBSYMBOL ptr, _
+		byval parent as FBSYMBOL ptr _
+	) as integer
+
+	dim as FBSYMBOL ptr context = any
+
+	'' Check against the current context, only allowing...
+	'' - private access from inside the symbol's parent UDT namespace,
+	''   i.e. the UDT body, a method, or a namespace nested inside either.
+	'' - protected access from inside the namespace of an UDT that was
+	''   derived from the symbol's real parent UDT.
+
+	'' For all nested namespaces in the current parsing context,
+	'' from the current namespace up to the toplevel one...
+	context = symbGetCurrentNamespc( )
+	while( context <> @symbGetGlobalNamespc( ) )
+
+		'' Is it an UDT namespace? (i.e. a method or UDT body?)
+		if( symbIsStruct( context ) ) then
+			'' Ok if same namespace for private/protected
+			if( context = parent ) then
+				'' We're inside the parent
+				return TRUE
+			end if
+
+			'' Protected additionally allows derived UDTs
+			if( sym->attrib and FB_SYMBATTRIB_VIS_PROTECTED ) then
+				if( symbGetUDTBaseLevel( context, parent ) > 0 ) then
+					'' We're inside an UDT derived from the parent
+					return TRUE
+				end if
+			end if
+		end if
+
+		context = symbGetNamespace( context )
+	wend
+
+end function
+
 function symbCheckAccess _
 	( _
 		byval sym as FBSYMBOL ptr _
@@ -2310,38 +2249,9 @@ function symbCheckAccess _
 		parent = symbGetNamespace( parent )
 	loop while( not symbIsStruct( parent ) )
 
-	'' Check against the current context, only allowing...
-	'' - private access from inside the symbol's parent UDT namespace,
-	''   i.e. the UDT body, a method, or a namespace nested inside either.
-	'' - protected access from inside the namespace of an UDT that was
-	''   derived from the symbol's real parent UDT.
+	'' check access based on parent
+	function = hsymbCheckAccessParent( sym, parent )
 
-	'' For all nested namespaces in the current parsing context,
-	'' from the current namespace up to the toplevel one...
-	context = symbGetCurrentNamespc( )
-	while( context <> @symbGetGlobalNamespc( ) )
-
-		'' Is it an UDT namespace? (i.e. a method or UDT body?)
-		if( symbIsStruct( context ) ) then
-			'' Ok if same namespace for private/protected
-			if( context = parent ) then
-				'' We're inside the parent
-				return TRUE
-			end if
-
-			'' Protected additionally allows derived UDTs
-			if( sym->attrib and FB_SYMBATTRIB_VIS_PROTECTED ) then
-				if( symbGetUDTBaseLevel( context, parent ) > 0 ) then
-					'' We're inside an UDT derived from the parent
-					return TRUE
-				end if
-			end if
-		end if
-
-		context = symbGetNamespace( context )
-	wend
-
-	function = FALSE
 end function
 
 function symbCheckAccessStruct _
@@ -2349,14 +2259,11 @@ function symbCheckAccessStruct _
 		byval sym as FBSYMBOL ptr _
 	) as integer
 
-	'' !!! TODO !!! - combine with symbCheckAccess()?
-	'' this procedure was created based on symbCheckAccess()
-	'' but differs by the following:
-	'' - this check is only called from hMaybeComplainTypeUsage()
+	'' - called from hMaybeComplainTypeUsage()
 	'' - no early exit and we check all the parents
-	'' Neither of symbCheckAccess() nor symbCheckAccessStruct() are
-	'' fully correct for every context of access check, so more
-	'' work is still needed to get correct access checks.
+	'' - neither of symbCheckAccess() nor symbCheckAccessStruct() are
+	''   fully correct for every context of access check, so more
+	''   work is still needed to get correct access checks.
 
 	dim as FBSYMBOL ptr parent = any, context = any
 
@@ -2382,7 +2289,6 @@ function symbCheckAccessStruct _
 	loop
 
 	parent = sym
-
 	do
 		assert( parent <> @symbGetGlobalNamespc( ) )
 		parent = symbGetNamespace( parent )
@@ -2391,30 +2297,10 @@ function symbCheckAccessStruct _
 	'' Find the common ancenstor between the symbol to be checked and the
 	'' current namespace context.
 	do
-		'' For all nested namespaces in the current parsing context,
-		'' from the current namespace up to the toplevel one...
-		context = symbGetCurrentNamespc( )
-		while( context <> @symbGetGlobalNamespc( ) )
-
-			'' Is it an UDT namespace? (i.e. a method or UDT body?)
-			if( symbIsStruct( context ) ) then
-				'' Ok if same namespace for private/protected
-				if( context = parent ) then
-					'' We're inside the parent
-					return TRUE
-				end if
-
-				'' Protected additionally allows derived UDTs
-				if( sym->attrib and FB_SYMBATTRIB_VIS_PROTECTED ) then
-					if( symbGetUDTBaseLevel( context, parent ) > 0 ) then
-						'' We're inside an UDT derived from the parent
-						return TRUE
-					end if
-				end if
-			end if
-
-			context = symbGetNamespace( context )
-		wend
+		'' check access based on parent
+		if( hsymbCheckAccessParent( sym, parent ) ) then
+			return TRUE
+		end if
 
 		parent = symbGetNamespace( parent )
 	loop while( parent <> @symbGetGlobalNamespc( ) )

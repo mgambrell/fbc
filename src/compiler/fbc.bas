@@ -52,34 +52,34 @@ end type
 
 type FBCCTX
 	'' For command line parsing
-	optid               as integer    '' Current option
+	optid               as integer     '' Current option
 	lastmodule          as FBCIOFILE ptr '' module for last input file, so the default .o name can be overwritten with a following -o filename
-	objfile             as string '' -o filename waiting for next input file
-	backend             as integer  '' FB_BACKEND_* given via -gen, or -1 if -gen wasn't given
-	cputype             as integer  '' FB_CPUTYPE_* (-arch's argument), or -1
-	cputype_is_native   as integer  '' Whether -arch native was used
-	asmsyntax           as integer  '' FB_ASMSYNTAX_* from -asm, or -1 if not given
+	objfile             as string      '' -o filename waiting for next input file
+	backend             as integer     '' FB_BACKEND_* given via -gen, or -1 if -gen wasn't given
+	cputype             as integer     '' FB_CPUTYPE_* (-arch's argument), or -1
+	cputype_is_native   as integer     '' Whether -arch native was used
+	asmsyntax           as integer     '' FB_ASMSYNTAX_* from -asm, or -1 if not given
 
-	emitasmonly         as integer  '' write out FB backend output file only (.asm/.c)
-	keepasm             as integer  '' preserve FB backend output file (.asm/.c)
-	emitfinalasmonly    as integer  '' write out final .asm file only
-	keepfinalasm        as integer  '' preserve final .asm
+	emitasmonly         as integer     '' write out FB backend output file only (.asm/.c)
+	keepasm             as integer     '' preserve FB backend output file (.asm/.c)
+	emitfinalasmonly    as integer     '' write out final .asm file only
+	keepfinalasm        as integer     '' preserve final .asm
 	keepobj             as integer
 	verbose             as integer
 	showversion         as integer
 	showhelp            as integer
-	print               as integer  '' PRINT_* (-print option)
+	print               as integer     '' PRINT_* (-print option)
 
 	'' Command line input
-	modules             as TLIST '' FBCIOFILE's for input .bas files
-	rcs                 as TLIST '' FBCIOFILE's for input .rc/.res files
+	modules             as TLIST    '' FBCIOFILE's for input .bas files
+	rcs                 as TLIST    '' FBCIOFILE's for input .rc/.res files
 	xpm                 as FBCIOFILE '' .xpm input file
-	temps               as TLIST '' Temporary files to delete at shutdown
-	objlist             as TLIST '' Objects from command line and from compilation
+	temps               as TSTRSET  '' Temporary files to delete at shutdown
+	objlist             as TLIST    '' Objects from command line and from compilation
 	libfiles            as TLIST
 	libs                as TSTRSET
 	libpaths            as TSTRSET
-	excludedlibs        as TSTRSET '' lib names explicitly excluded via -nodeflib option(s)
+	excludedlibs        as TSTRSET  '' lib names explicitly excluded via -nodeflib option(s)
 
 	'' Final list of libs and paths for linking
 	'' (each module can have #inclibs and #libpaths and add more, and for
@@ -200,7 +200,7 @@ private sub fbcInit( )
 
 	listInit( @fbc.modules, FBC_INITFILES, sizeof(FBCIOFILE) )
 	listInit( @fbc.rcs, FBC_INITFILES\4, sizeof(FBCIOFILE) )
-	strlistInit( @fbc.temps, FBC_INITFILES\4 )
+	strsetInit( @fbc.temps, FBC_INITFILES\4 )
 	strlistInit( @fbc.objlist, FBC_INITFILES )
 	strlistInit( @fbc.libfiles, FBC_INITFILES\4 )
 	strsetInit( @fbc.libs, FBC_INITFILES\4 )
@@ -265,9 +265,9 @@ end sub
 
 private sub fbcEnd( byval errnum as integer )
 	'' Clean up temporary files
-	dim as string ptr file = listGetHead( @fbc.temps )
+	dim as TSTRSETITEM ptr file = listGetHead(@fbc.temps.list)
 	while( file )
-		safeKill( *file )
+		safeKill( file->s )
 		file = listGetNext( file )
 	wend
 
@@ -275,7 +275,11 @@ private sub fbcEnd( byval errnum as integer )
 end sub
 
 private sub fbcAddTemp(byref file as string)
-	strlistAppend(@fbc.temps, file)
+	strsetAdd(@fbc.temps, file, 0)
+end sub
+
+private sub fbcRemoveTemp(byref file as string)
+	strsetDel(@fbc.temps, file)
 end sub
 
 private function fbcAddObj( byref file as string ) as string ptr
@@ -894,7 +898,8 @@ private function hLinkFiles( ) as integer
 			"CASE_INSENSITIVE_FS=1", _
 			"TOTAL_MEMORY=67108864", _
 			"ALLOW_MEMORY_GROWTH=1", _
-			"RETAIN_COMPILER_SETTINGS=1" _
+			"RETAIN_COMPILER_SETTINGS=1", _
+			"ASYNCIFY=1" _
 		}
 			'"WARN_UNALIGNED=1", _
 
@@ -1219,11 +1224,15 @@ private function hLinkFiles( ) as integer
 		end if
 	#elseif defined( __FB_WIN32__ )
 		#ifdef ENABLE_STANDALONE
-			if( fbGetOption( FB_COMPOPT_TARGET ) = FB_COMPTARGET_DOS ) then
+			'' "cross"-compiling? djgpp cross tools and emscripten
+			'' build tools can't seem to handle the long command line
+			'' created when linking ./tests/fbc-tests
+			select case fbGetOption( FB_COMPOPT_TARGET )
+			case FB_COMPTARGET_DOS, FB_COMPTARGET_JS
 				if( hPutLdArgsIntoFile( ldcline ) = FALSE ) then
 					exit function
 				end if
-			end if
+			end select
 		#else
 			dim toolnamelen as integer = len( "ld.exe " ) + _
 				iif( len( fbc.targetprefix ) > len( fbc.buildprefix ), len( fbc.targetprefix ), len( fbc.buildprefix ) )
@@ -1255,7 +1264,8 @@ private function hLinkFiles( ) as integer
 			exit function
 		end if
 
-		put #f, 533, clng( fbGetOption( FB_COMPOPT_STACKSIZE ) )
+		dim value as long = clng( fbGetOption( FB_COMPOPT_STACKSIZE ) )
+		put #f, 533, value
 
 		close #f
 
@@ -1344,7 +1354,7 @@ private sub hReadObjinfo( )
 			end if
 
 		case OBJINFO_GFX
-			fbSetOption( FB_COMPOPT_GFX, TRUE )
+			fbSetOption( FB_COMPOPT_FBGFX, TRUE )
 
 		case OBJINFO_LANG
 			lang = fbGetLangId( dat )
@@ -1708,6 +1718,7 @@ enum
 	OPT_EX
 	OPT_EXX
 	OPT_EXPORT
+	OPT_FBGFX
 	OPT_FORCELANG
 	OPT_FPMODE
 	OPT_FPU
@@ -1773,7 +1784,7 @@ dim shared as FBC_CMDLINE_OPTION cmdlineOptionTB(0 to (OPT__COUNT - 1)) = _
 	( TRUE , TRUE , FALSE, TRUE  ), _ '' OPT_ASM          affects major initialization,affects second stage compile
 	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_B            adds files to compile
 	( TRUE , TRUE , FALSE, TRUE  ), _ '' OPT_BUILDPREFIX  affects tools executed (fbcSetupCompilerPaths(), so restart is required)
-	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_C            affects compile / assemble /link process
+	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_C            affects code generation / compile / assemble /link process
 	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_CKEEPOBJ     affects removal of temporary files
 	( TRUE , TRUE , FALSE, TRUE  ), _ '' OPT_D            add symbols to current source also, not just the preDefines, affects global defines
 	( FALSE, TRUE , TRUE , TRUE  ), _ '' OPT_DLL          affects major initialization, affects output format
@@ -1790,6 +1801,7 @@ dim shared as FBC_CMDLINE_OPTION cmdlineOptionTB(0 to (OPT__COUNT - 1)) = _
 	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_EX           affects code generation
 	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_EXX          affects code generation
 	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_EXPORT       affects code generation
+	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_FBGFX        affects link
 	( TRUE , TRUE , TRUE , FALSE ), _ '' OPT_FORCELANG    never allow, command line only
 	( TRUE , TRUE , TRUE , TRUE  ), _ '' OPT_FPMODE       affects major initialization, affects code generation
 	( TRUE , TRUE , TRUE , TRUE  ), _ '' OPT_FPU          affects major initialization,affects code generation, affects second stage compile, affects link
@@ -1810,7 +1822,7 @@ dim shared as FBC_CMDLINE_OPTION cmdlineOptionTB(0 to (OPT__COUNT - 1)) = _
 	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_NOLIB        affects link
 	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_NOOBJINFO    affects post compile process
 	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_NOSTRIP      affects link
-	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_O            affects input file naming
+	( TRUE , TRUE , TRUE , TRUE  ), _ '' OPT_O            affects output file naming with initialization before compile
 	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_OPTIMIZE     affects link
 	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_P            affects link, same as #libpath
 	( FALSE, TRUE , FALSE, TRUE  ), _ '' OPT_PIC          affects major initialization, affects link
@@ -1818,10 +1830,10 @@ dim shared as FBC_CMDLINE_OPTION cmdlineOptionTB(0 to (OPT__COUNT - 1)) = _
 	( TRUE , TRUE , FALSE, TRUE  ), _ '' OPT_PREFIX       affects major initialization
 	( TRUE , FALSE, FALSE, FALSE ), _ '' OPT_PRINT        never allow, makes no sense to have in source
 	( FALSE, TRUE , TRUE , TRUE  ), _ '' OPT_PROFILE      affects major initialization, affects initialization, affects code generation, affects link
-	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_R            affects compile / assmble /link process
-	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_RKEEPASM     affects removal of temporary files
-	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_RR           affects compile / assmble /link process
-	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_RRKEEPASM    affects removal of temporary files
+	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_R            affects compile / assemble / link process, removal of temporary files
+	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_RKEEPASM     affects removal of temporary files
+	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_RR           affects compile / assemble / link process, removal of temporary files
+	( FALSE, TRUE , TRUE , FALSE ), _ '' OPT_RRKEEPASM    affects removal of temporary files
 	( TRUE , TRUE , FALSE, FALSE ), _ '' OPT_S            affects link
 	( FALSE, TRUE , FALSE, TRUE  ), _ '' OPT_SHOWINCLUDES affects compiler output display
 	( FALSE, TRUE , FALSE, FALSE ), _ '' OPT_STATIC       affects link
@@ -1933,6 +1945,9 @@ private sub handleOpt _
 
 	case OPT_EXPORT
 		fbSetOption( FB_COMPOPT_EXPORT, TRUE )
+
+	case OPT_FBGFX
+		fbSetOption( FB_COMPOPT_FBGFX, TRUE )
 
 	case OPT_FORCELANG
 		dim as integer value = fbGetLangId(strptr(arg))
@@ -2321,8 +2336,8 @@ private sub handleOpt _
 			fbSetOption( FB_COMPOPT_FBRT, TRUE )
 		case "nocmdline"
 			fbSetOption( FB_COMPOPT_NOCMDLINE, TRUE )
-		case "no-retinflts"
-			fbSetOption( FB_COMPOPT_NORETURNINFLTS, TRUE )
+		case "retinflts"
+			fbSetOption( FB_COMPOPT_RETURNINFLTS, TRUE )
 		case else
 			hFatalInvalidOption( arg, is_source )
 		end select
@@ -2379,6 +2394,7 @@ private function parseOption(byval opt as zstring ptr) as integer
 		CHECK("export", OPT_EXPORT)
 
 	case asc("f")
+		CHECK("fbgfx", OPT_FBGFX)
 		CHECK("forcelang", OPT_FORCELANG)
 		CHECK("fpmode", OPT_FPMODE)
 		CHECK("fpu", OPT_FPU)
@@ -3056,16 +3072,6 @@ private sub hCompileBas _
 
 	asmfile = hGetAsmName( module, 1 )
 
-	'' Clean up stage 1 output (FB backend's output, *.asm/*.c/*.ll),
-	'' unless -R was given, and additionally in case of -gen gas, unless -RR
-	'' was given (because for -gen gas, the FB backend's .asm output is also
-	'' the final .asm which -RR is supposed to preserve).
-	if( (not fbc.keepasm) and _
-		(((fbGetOption( FB_COMPOPT_BACKEND ) <> FB_BACKEND_GAS) and (fbGetOption( FB_COMPOPT_BACKEND ) <> FB_BACKEND_GAS64) ) or _
-		(not fbc.keepfinalasm)) ) then
-		fbcAddTemp( asmfile )
-	end if
-
 	'' -pp?
 	if( fbGetOption( FB_COMPOPT_PPONLY ) ) then
 		'' Re-use the full -o path/filename for the -pp output file,
@@ -3108,6 +3114,27 @@ private sub hCompileBas _
 	end if
 
 	do
+		'' Clean up stage 1 output (FB backend's output, *.asm/*.c/*.ll),
+		'' unless -R was given, and additionally in case of -gen gas, unless -RR
+		'' was given (because for -gen gas, the FB backend's .asm output is also
+		'' the final .asm which -RR is supposed to preserve).
+		if( (not fbc.keepasm) and _
+			(((fbGetOption( FB_COMPOPT_BACKEND ) <> FB_BACKEND_GAS) and (fbGetOption( FB_COMPOPT_BACKEND ) <> FB_BACKEND_GAS64) ) or _
+			(not fbc.keepfinalasm)) ) then
+			fbcAddTemp( asmfile )
+
+		'' first module? handle side effects of #cmdline
+		elseif( module_count = 1 ) then
+			'' Keep the asm file.  If the keep option was in a #cmdline then
+			'' the temporary file probably was already added to the fbc.temps
+			'' list on the first pass in to the parser (unless real command
+			'' line also had an option to keep the asm file).
+
+			if( fbRestartGetCount() > 0 ) then
+				fbcRemoveTemp( asmfile )
+			end if
+		end if
+
 		'' init the parser (note: initializes env)
 		fbInit( is_main, fbc.entry, module_count )
 
@@ -3422,7 +3449,7 @@ private function hCompileStage2Module( byval module as FBCIOFILE ptr ) as intege
 			'if Emscripten is used, we will skip the assembly generation and compile directly to object code
 			ln += "-c -nostdlib -nostdinc -Wall -Wno-unused-label " + _
 				"-Wno-unused-function -Wno-unused-variable "
-			ln += "-Wno-warn-absolute-paths -s ASYNCIFY=1 -s RETAIN_COMPILER_SETTINGS=1 "
+			ln += "-Wno-warn-absolute-paths "
 		end if
 
 		'' Don't warn about non-standard main() signature
@@ -3432,12 +3459,18 @@ private function hCompileStage2Module( byval module as FBCIOFILE ptr ) as intege
 		'' helps finding ir-hlc bugs
 		ln += "-Werror-implicit-function-declaration "
 
-		if( fbGetOption( FB_COMPOPT_TARGET ) <> FB_COMPTARGET_JS ) then
-			ln += "-O" + str( fbGetOption( FB_COMPOPT_OPTIMIZELEVEL ) ) + " "
-		end if
+		ln += "-O" + str( fbGetOption( FB_COMPOPT_OPTIMIZELEVEL ) ) + " "
 
 		'' Do not let gcc make assumptions about pointers; FB isn't strict about it.
 		ln += "-fno-strict-aliasing "
+
+		'' Ignore .ident directives on win32 targets to prevent identification strings
+		'' from accumulating in the final binary (each .ident string from every object
+		'' module is added to the final binary even when strings are identical).
+		select case as const( fbGetOption( FB_COMPOPT_TARGET ) )
+		case FB_COMPTARGET_WIN32
+			ln += "-fno-ident "
+		end select
 
 		'' The rtlib sets its own rounding mode, don't let gcc make assumptions.
 		if( fbGetOption( FB_COMPOPT_TARGET ) <> FB_COMPTARGET_JS ) then
@@ -3790,8 +3823,13 @@ private function hArchiveFiles( ) as integer
 		objfile = listGetNext( objfile )
 	wend
 
+	var ar = FBCTOOL_AR
+	if( fbGetOption( FB_COMPOPT_TARGET ) = FB_COMPTARGET_JS ) then
+		ar = FBCTOOL_EMAR
+	end if
+
 	'' invoke ar
-	function = fbcRunBin( "archiving", FBCTOOL_AR, ln )
+	function = fbcRunBin( "archiving", ar, ln )
 end function
 
 private sub hSetDefaultLibPaths( )
@@ -3807,6 +3845,20 @@ private sub hSetDefaultLibPaths( )
 	'' standalone, which has libgcc in the main lib/.
 	if( fbGetOption( FB_COMPOPT_TARGET ) <> FB_COMPTARGET_JS ) then
 		fbcAddLibPathFor( "libgcc.a" )
+
+		#ifndef DISABLE_STDCXX_PATH
+			'' we don't specifically need c++, but for some users that do want to
+			'' interop with c++ and to allow some of the tests/cpp tests to pass
+			'' it's helpful to also query for a c++ library.
+			select case fbGetOption( FB_COMPOPT_TARGET )
+			case FB_COMPTARGET_FREEBSD
+				fbcAddLibPathFor( "libc++.so" )
+			case FB_COMPTARGET_DOS
+				fbcAddLibPathFor( "libstdcx.a" )
+			case else
+				fbcAddLibPathFor( "libstdc++.so" )
+			end select
+		#endif
 	end if
 
 	select case( fbGetOption( FB_COMPOPT_TARGET ) )
@@ -3848,7 +3900,7 @@ private sub hAddDefaultLibs( )
 	end if
 
 	'' and the gfxlib, if gfx functions were used
-	if( fbGetOption( FB_COMPOPT_GFX ) ) then
+	if( fbGetOption( FB_COMPOPT_FBGFX ) ) then
 		fbcAddDefLib( "fbgfx" + hGetFbLibNameSuffix( ) )
 
 		select case as const( fbGetOption( FB_COMPOPT_TARGET ) )
@@ -4061,11 +4113,14 @@ private sub hPrintOptions( byval verbose as integer )
 	print "  -ex              -e plus RESUME support"
 	print "  -exx             -ex plus array bounds/null-pointer checking"
 	print "  -export          Export symbols for dynamic linkage"
+	if( verbose ) then
+	print "  -fbgfx           Link to the appropriate libfbgfx variant (normally automatic)"
+	end if
 	print "  -forcelang <name>  Override #lang statements in source code"
 	if( verbose ) then
 	print "  -fpmode fast|precise  Select floating-point math accuracy/speed"
 	print "  -fpu x87|sse     Set target FPU"
-	endif
+	end if
 	print "  -g               Add debug info, enable __FB_DEBUG__, and enable assert()"
 
 	if( verbose ) then
@@ -4149,7 +4204,7 @@ private sub hPrintOptions( byval verbose as integer )
 	print "  -z no-fastcall   Don't use '__fastcall' calling convention"
 	print "  -z fbrt          Link with 'fbrt' instead of 'fb' runtime library"
 	print "  -z nocmdline     Disable #cmdline source directives"
-	print "  -z no-retinflts  Disable returning some types in floating point registers"
+	print "  -z retinflts     Enable returning some types in floating point registers"
 	end if
 
 end sub
@@ -4166,7 +4221,7 @@ private sub hPrintVersion( byval verbose as integer )
 
 	print "FreeBASIC Compiler - Version " + FB_VERSION + _
 		" (" + FB_BUILD_DATE_ISO + "), built for " + fbGetHostId( ) + " (" & fbGetHostBits( ) & "bit)"
-	print "Copyright (C) 2004-2022 The FreeBASIC development team."
+	print "Copyright (C) 2004-2023 The FreeBASIC development team."
 
 	#ifdef ENABLE_STANDALONE
 		hAppendConfigInfo( config, "standalone" )

@@ -60,6 +60,18 @@ sub lexPopCtx( )
 		DWstrAllocate( lex.ctx->deftextw, 0 )
 	end if
 
+
+	'' if it's an include file, don't bother restoring file position because
+	'' we are going to be closing the file anyway
+	if( lex.ctx->kind <> LEX_TKCTX_CONTEXT_INCLUDE ) then
+		'' restore file pointer position if current context is different from previous
+		if( (lex.ctx-1)->physfilepos > 0 ) then
+			if( (lex.ctx-1)->physfilepos <> lex.ctx->physfilepos ) then
+				seek #env.inf.num, (lex.ctx-1)->physfilepos
+			end if
+		end if
+	end if
+
 	lex.ctx -= 1
 
 end sub
@@ -68,14 +80,16 @@ end sub
 '':::::
 sub lexInit _
 	( _
-		byval isinclude as integer, _
-		byval is_fb_eval as integer _
+		byval ctx_kind as LEX_TKCTX_CONTEXT _
 	)
 
 	dim as integer i
 	dim as FBTOKEN ptr n
 
-	if( (env.includerec = 0) and (is_fb_eval = FALSE) ) then
+	'' !!!TODO!!! - determine if env.includerec check can be removed
+
+	'' first time? make sure lex.ctx points to something
+	if( (env.includerec = 0) and (ctx_kind = LEX_TKCTX_CONTEXT_INIT) ) then
 		lex.ctx = @lex.ctxTB(0)
 	end if
 
@@ -101,12 +115,15 @@ sub lexInit _
 	lex.ctx->lahdchar1 = UINVALID
 	lex.ctx->lahdchar2 = UINVALID
 
-	lex.ctx->is_fb_eval = is_fb_eval
+	lex.ctx->kind = ctx_kind
 
-	if( is_fb_eval ) then
+	'' preprocessor evaluation?
+	if( ctx_kind = LEX_TKCTX_CONTEXT_EVAL ) then
 		lex.ctx->linenum = (lex.ctx-1)->linenum
 		lex.ctx->reclevel = (lex.ctx-1)->reclevel
 		lex.ctx->currmacro = (lex.ctx-1)->currmacro
+
+	'' else it is an include file or first time initialization
 	else
 		lex.ctx->linenum = 1
 		lex.ctx->reclevel = 0
@@ -120,7 +137,7 @@ sub lexInit _
 	lex.ctx->deflen = 0
 
 	if( env.inf.format = FBFILE_FORMAT_ASCII ) then
-		lex.ctx->buffptr = iif( is_fb_eval, @lex.ctx->buff, NULL )
+		lex.ctx->buffptr = iif( ctx_kind = LEX_TKCTX_CONTEXT_EVAL, @lex.ctx->buff, NULL )
 		lex.ctx->defptr = NULL
 		DZstrAllocate( lex.ctx->deftext, 0 )
 	else
@@ -129,24 +146,30 @@ sub lexInit _
 		DWstrAllocate( lex.ctx->deftextw, 0 )
 	end if
 
-	''
-	if( is_fb_eval ) then
+	'' preprocessor evaluation?
+	if( ctx_kind = LEX_TKCTX_CONTEXT_EVAL ) then
 		lex.ctx->filepos = (lex.ctx-1)->filepos
 		lex.ctx->lastfilepos = (lex.ctx-1)->lastfilepos
+		lex.ctx->physfilepos = (lex.ctx-1)->physfilepos
+
+	'' else it is an include file or first time initialization
 	else
 		lex.ctx->filepos = 0
 		lex.ctx->lastfilepos = 0
+		lex.ctx->physfilepos = 0
 	end if
 
 	'' only if it's not on an inc file
-	if( (env.includerec = 0) or (is_fb_eval = TRUE) ) then
+	'' !!!TODO!!! - determine if env.includerec check can be removed
+	'' if( ctx_kind <> LEX_TKCTX_CONTEXT_INCLUDE ) then
+	if( (env.includerec = 0) or (ctx_kind = LEX_TKCTX_CONTEXT_EVAL) ) then
 		DZstrAllocate( lex.ctx->currline, 0 )
 		lex.insidemacro = FALSE
 	end if
 
 	lex.ctx->after_space = FALSE
 
-	if( (isinclude = FALSE) and (is_fb_eval = FALSE ) ) then
+	if( ctx_kind = LEX_TKCTX_CONTEXT_INIT ) then
 		ppInit( )
 	end if
 
@@ -227,7 +250,8 @@ private function hReadChar _
 				select case as const env.inf.format
 				case FBFILE_FORMAT_ASCII
 					if( get( #env.inf.num, , lex.ctx->buff ) = 0 ) then
-						lex.ctx->bufflen = seek( env.inf.num ) - lex.ctx->filepos
+						lex.ctx->physfilepos = seek( env.inf.num )
+						lex.ctx->bufflen = lex.ctx->physfilepos - lex.ctx->filepos
 						lex.ctx->buffptr = @lex.ctx->buff
 					end if
 
@@ -300,6 +324,23 @@ sub lexEatChar( )
 	end if
 end sub
 
+function lexEatWhitespace( ) as integer
+
+	function = FALSE
+
+	if( lex.ctx->currchar = UINVALID ) then
+		lex.ctx->currchar = hReadChar( )
+	end if
+
+	do while( (lex.ctx->currchar = CHAR_TAB) or (lex.ctx->currchar = CHAR_SPACE) )
+		lex.ctx->after_space = TRUE
+		lexEatChar( )
+		lex.ctx->currchar = hReadChar( )
+		function = TRUE
+	loop
+
+end function
+
 '':::::
 private sub hSkipChar
 
@@ -335,19 +376,10 @@ end sub
 '':::::
 function lexCurrentChar _
 	( _
-		byval skipwhitespc as integer = FALSE _
 	) as uinteger
 
 	if( lex.ctx->currchar = UINVALID ) then
 		lex.ctx->currchar = hReadChar( )
-	end if
-
-	if( skipwhitespc ) then
-		do while( (lex.ctx->currchar = CHAR_TAB) or (lex.ctx->currchar = CHAR_SPACE) )
-			lex.ctx->after_space = TRUE
-			lexEatChar( )
-			lex.ctx->currchar = hReadChar( )
-		loop
 	end if
 
 	function = lex.ctx->currchar
@@ -357,20 +389,11 @@ end function
 '':::::
 function lexGetLookAheadChar _
 	( _
-		byval skipwhitespc as integer = FALSE _
 	) as uinteger
 
 	if( lex.ctx->lahdchar1 = UINVALID ) then
 		hSkipChar( )
 		lex.ctx->lahdchar1 = hReadChar( )
-	end if
-
-	if( skipwhitespc ) then
-		do while( (lex.ctx->lahdchar1 = CHAR_TAB) or (lex.ctx->lahdchar1 = CHAR_SPACE) )
-			lex.ctx->after_space = TRUE
-			hSkipChar( )
-			lex.ctx->lahdchar1 = hReadChar( )
-		loop
 	end if
 
 	function = lex.ctx->lahdchar1
@@ -1777,7 +1800,7 @@ re_read:
 	case CHAR_DOT
 		'' only check for fpoint literals if not inside a comment or parsing an $include
 		if( (flags and (LEXCHECK_NOLINECONT or LEXCHECK_NOSUFFIX)) = 0 ) then
-			var lachar = lexGetLookAheadChar( TRUE )
+			var lachar = lexGetLookAheadChar( )
 			'' '0' .. '9'?
 			if( (lachar >= CHAR_0) and (lachar <= CHAR_9) ) then
 				hReadNumber( *t, flags )
@@ -1882,7 +1905,7 @@ read_char:
 
 			select case char
 			case CHAR_LT
-				select case lexCurrentChar( TRUE )
+				select case lexCurrentChar( )
 				'' '<='?
 				case CHAR_EQ
 					t->text[t->len+0] = CHAR_EQ
@@ -1905,7 +1928,7 @@ read_char:
 
 			case CHAR_GT
 				'' '>='?
-				if( (fbGetGtInParensOnly( ) = FALSE) andalso (lexCurrentChar( TRUE ) = CHAR_EQ) ) then
+				if( (fbGetGtInParensOnly( ) = FALSE) andalso (lexCurrentChar( ) = CHAR_EQ) ) then
 					t->text[t->len+0] = CHAR_EQ
 					t->text[t->len+1] = 0
 					t->len += 1
@@ -1917,7 +1940,7 @@ read_char:
 
 			case CHAR_EQ
 				'' '=>'?
-				if( lexCurrentChar( TRUE ) = CHAR_GT ) then
+				if( lexCurrentChar( ) = CHAR_GT ) then
 					t->text[t->len+0] = CHAR_GT
 					t->text[t->len+1] = 0
 					t->len += 1
@@ -1937,7 +1960,7 @@ read_char:
 			t->class = FB_TKCLASS_OPERATOR
 
 			'' check for type-field dereference
-			if( lexCurrentChar( TRUE ) = CHAR_GT ) then
+			if( lexCurrentChar( ) = CHAR_GT ) then
 				t->text[t->len+0] = CHAR_GT
 				t->text[t->len+1] = 0
 				t->len += 1
@@ -2013,7 +2036,7 @@ private sub hMultiLineComment( ) static
 
 	cnt = 0
 	do
-		select case as const lexCurrentChar( TRUE )
+		select case as const lexCurrentChar( )
 		'' EOF?
 		case 0
 			errReportEx( FB_ERRMSG_EXPECTEDENDCOMMENT, NULL )
@@ -2436,7 +2459,7 @@ function lexPeekCurrentLine _
 	'' get file contents around current token
 	old_p = seek( env.inf.num )
 
-	if( lex.ctx->is_fb_eval ) then
+	if( lex.ctx->kind = LEX_TKCTX_CONTEXT_EVAL ) then
 		p = (lex.ctx-1)->lastfilepos - 512
 	else
 		p = lex.ctx->lastfilepos - 512

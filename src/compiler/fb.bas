@@ -113,7 +113,6 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 		FB_FUNCMODE_STDCALL, _  '' stdcall
 		0   or FB_TARGETOPT_EXPORT _
 			or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 			or FB_TARGETOPT_COFF _
 	), _
 	( _
@@ -124,7 +123,6 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 		0   or FB_TARGETOPT_UNIX _
 			or FB_TARGETOPT_EXPORT _
 			or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 			or FB_TARGETOPT_COFF _
 	), _
 	( _
@@ -151,7 +149,6 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 		FB_FUNCMODE_STDCALL, _
 		FB_FUNCMODE_STDCALL, _
 		0   or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 			or FB_TARGETOPT_COFF _
 	), _
 	( _
@@ -173,7 +170,6 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 		0   or FB_TARGETOPT_UNIX _
 			or FB_TARGETOPT_CALLEEPOPSHIDDENPTR _
 			or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 			or FB_TARGETOPT_ELF _
 	), _
 	( _
@@ -184,7 +180,6 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 		0   or FB_TARGETOPT_UNIX _
 			or FB_TARGETOPT_CALLEEPOPSHIDDENPTR _
 			or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 			or FB_TARGETOPT_ELF _
 	), _
 	( _
@@ -222,13 +217,12 @@ dim shared as FBTARGET targetinfo(0 to FB_COMPTARGETS-1) = _
 	), _
 	( _
 		@"js", _
-		FB_DATATYPE_USHORT, _   '' wchar
+		FB_DATATYPE_ULONG, _   '' wchar
 		FB_FUNCMODE_CDECL, _
 		FB_FUNCMODE_STDCALL_MS, _
 		0   or FB_TARGETOPT_UNIX _
 			or FB_TARGETOPT_CALLEEPOPSHIDDENPTR _
 			or FB_TARGETOPT_RETURNINREGS _
-			or FB_TARGETOPT_RETURNINFLTS _
 	) _
 }
 
@@ -480,14 +474,29 @@ sub fbInit _
 	irInit( )
 
 	'' After symbInit(), we can use typeGetSize()
-	env.wchar_doconv = (sizeof( wstring ) = typeGetSize( env.target.wchar ))
+	if( sizeof( wstring ) = typeGetSize( env.target.wchar ) ) then
+		env.wcharconv = FB_WCHARCONV_ALWAYS
+	else
+		env.wcharconv = FB_WCHARCONV_NEVER
+	end if
+
+#if ( __FB_DEBUG__ <> 0 ) andalso defined( __FB_WIN32__ )
+	select case( env.clopt.target )
+	case FB_COMPTARGET_JS
+		'' !!!TODO!!! - FB_WCHARCONV_WARNING needs to show warnings on conversions
+		'' !!!TODO!!! - FB_WCHARCONV_WARNING probably not correct to force a value
+		''              but setting it helps with development and testing
+		''              where sizeof(host-wstring) <> sizeof(target-wstring)
+		env.wcharconv = FB_WCHARCONV_WARNING
+	end select
+#endif
 
 	hashInit( @env.filenamehash, FB_INITINCFILES )
 	hashInit( @env.incfilehash, FB_INITINCFILES, FALSE )
 	hashInit( @env.inconcehash, FB_INITINCFILES, FALSE )
 
 	stackNew( @parser.stmt.stk, FB_INITSTMTSTACKNODES, len( FB_CMPSTMTSTK ), FALSE )
-	lexInit( FALSE, FALSE )
+	lexInit( LEX_TKCTX_CONTEXT_INIT )
 	parserInit( )
 	rtlInit( )
 
@@ -524,8 +533,8 @@ end sub
 
 private sub hUpdateTargetOptions( )
 	env.target = targetinfo(env.clopt.target)
-	if( env.clopt.noreturninflts ) then
-		env.target.options and= not FB_TARGETOPT_RETURNINFLTS
+	if( env.clopt.returninflts ) then
+		env.target.options or= FB_TARGETOPT_RETURNINFLTS
 	end if
 end sub
 
@@ -570,7 +579,7 @@ sub fbGlobalInit()
 	env.clopt.gosubsetjmp   = FALSE
 	env.clopt.export        = FALSE
 	env.clopt.multithreaded = FALSE
-	env.clopt.gfx           = FALSE
+	env.clopt.fbgfx         = FALSE
 	env.clopt.pic           = FALSE
 	env.clopt.msbitfields   = FALSE
 	env.clopt.stacksize     = 0 '' default will be set by fbSetOption() called from hParseArgs()
@@ -578,7 +587,7 @@ sub fbGlobalInit()
 	env.clopt.showincludes  = FALSE
 	env.clopt.modeview      = FB_DEFAULT_MODEVIEW
 	env.clopt.nocmdline     = FALSE
-	env.clopt.noreturninflts= FALSE
+	env.clopt.returninflts  = FALSE
 
 	env.restart_request     = FB_RESTART_NONE
 	env.restart_action      = FB_RESTART_NONE
@@ -685,8 +694,8 @@ sub fbSetOption( byval opt as integer, byval value as integer )
 		env.clopt.msbitfields = value
 	case FB_COMPOPT_MULTITHREADED
 		env.clopt.multithreaded = value
-	case FB_COMPOPT_GFX
-		env.clopt.gfx = value
+	case FB_COMPOPT_FBGFX
+		env.clopt.fbgfx = value
 	case FB_COMPOPT_PIC
 		env.clopt.pic = value
 	case FB_COMPOPT_STACKSIZE
@@ -711,8 +720,9 @@ sub fbSetOption( byval opt as integer, byval value as integer )
 		env.clopt.modeview = value
 	case FB_COMPOPT_NOCMDLINE
 		env.clopt.nocmdline = value
-	case FB_COMPOPT_NORETURNINFLTS
-		env.clopt.noreturninflts = value
+	case FB_COMPOPT_RETURNINFLTS
+		env.clopt.returninflts = value
+		hUpdateTargetOptions( )
 	end select
 end sub
 
@@ -795,8 +805,8 @@ function fbGetOption( byval opt as integer ) as integer
 		function = env.clopt.msbitfields
 	case FB_COMPOPT_MULTITHREADED
 		function = env.clopt.multithreaded
-	case FB_COMPOPT_GFX
-		function = env.clopt.gfx
+	case FB_COMPOPT_FBGFX
+		function = env.clopt.fbgfx
 	case FB_COMPOPT_PIC
 		function = env.clopt.pic
 	case FB_COMPOPT_STACKSIZE
@@ -809,8 +819,8 @@ function fbGetOption( byval opt as integer ) as integer
 		function = env.clopt.modeview
 	case FB_COMPOPT_NOCMDLINE
 		function = env.clopt.nocmdline
-	case FB_COMPOPT_NORETURNINFLTS
-		function = env.clopt.noreturninflts
+	case FB_COMPOPT_RETURNINFLTS
+		function = env.clopt.returninflts
 
 	case else
 		function = 0
@@ -1105,13 +1115,13 @@ sub fbAddLib(byval libname as zstring ptr)
 		'' multithreading may have been set after fbgfx.bi was
 		'' included, and we can't have both libs passed to the
 		'' linker. We can end up linking to the non-threaded
-		'' version of fbgfx when we would expect the mt versoin
+		'' version of fbgfx when we would expect the mt version,
 		'' and the linker won't complain even when both versions
 		'' are passed.
 
-		'' Set the -gfx option to link to the gfx library
+		'' Set the -fbgfx option to link to the gfx library
 		'' and the lib will be added in hAddDefaultLibs()
-		fbSetOption( FB_COMPOPT_GFX, TRUE )
+		fbSetOption( FB_COMPOPT_FBGFX, TRUE )
 
 		exit sub
 	end if
@@ -1200,8 +1210,8 @@ private sub hEmitObjinfo( )
 		hAppendFbctinf( objinfoEncode( OBJINFO_MT ) )
 	end if
 
-	'' -gfx
-	if( env.clopt.gfx ) then
+	'' -fbgfx
+	if( env.clopt.fbgfx ) then
 		hAppendFbctinf( objinfoEncode( OBJINFO_GFX ) )
 	end if
 
@@ -1651,7 +1661,7 @@ sub fbIncludeFile(byval filename as zstring ptr, byval isonce as integer)
 	'' parse
 	lexPushCtx( )
 
-	lexInit( TRUE, FALSE )
+	lexInit( LEX_TKCTX_CONTEXT_INCLUDE )
 
 	cProgram()
 

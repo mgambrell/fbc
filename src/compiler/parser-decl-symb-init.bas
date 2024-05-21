@@ -58,14 +58,14 @@ private function hDoAssign _
 		byval no_fake as integer = FALSE _
 	) as integer
 
-	dim as integer no_upcast = any
+	dim as integer no_upcast = any, check_upcast = FALSE
 	no_upcast = ((ctx.options and FB_INIOPT_NOUPCAST) <> 0)
+
+	'' pass the initializing expression back to parent if it fails here
+	ctx.init_expr = expr
 
 	if( astCheckASSIGNToType( ctx.dtype, ctx.subtype, expr, no_upcast ) = FALSE ) then
 		'' check if it's a cast
-
-		'' pass the initializing expression back to parent if it fails here
-		ctx.init_expr = expr
 
 		'' fail initializers that could be assigned with a cast to a base type.
 		'' This allows passing an initializer back to an exact matched parent.
@@ -85,9 +85,16 @@ private function hDoAssign _
 			astDelTree( expr )
 			expr = astNewCONSTz( ctx.dtype, ctx.subtype )
 		end if
+
+	else
+		'' astCheckASSIGNToType() succeeded so we should expect the
+		'' assignment of the expression to be successful, but we need
+		'' to tell astTypeIniAddAssign() to check for up-casting.
+
+		check_upcast = TRUE
 	end if
 
-	astTypeIniAddAssign( ctx.tree, expr, ctx.sym, ctx.dtype, ctx.subtype )
+	astTypeIniAddAssign( ctx.tree, expr, ctx.sym, ctx.dtype, ctx.subtype, check_upcast )
 
 	function = TRUE
 end function
@@ -241,8 +248,18 @@ private function hArrayInit _
 			end if
 		else
 			if( typeGetDtAndPtrOnly( ctx.dtype ) = FB_DATATYPE_STRUCT ) then
-				if( hUDTInit( ctx ) = FALSE ) then
-					exit function
+				if( isArray ) then
+					var options = ctx.options
+					ctx.options and= not FB_INIOPT_NOUPCAST
+					var ok = hUDTInit( ctx )
+					ctx.options = options
+					if( ok = FALSE ) then
+						exit function
+					end if
+				else
+					if( hUDTInit( ctx ) = FALSE ) then
+						exit function
+					end if
 				end if
 			else
 				if( hElmInit( ctx, no_fake ) = FALSE ) then
@@ -403,10 +420,10 @@ private function hUDTInit( byref ctx as FB_INITCTX ) as integer
 
 		if( is_ctorcall ) then
 			return astTypeIniAddCtorCall( ctx.tree, ctx.sym, expr, ctx.dtype, ctx.subtype ) <> NULL
-		else
-			'' try to assign it (do a shallow copy)
-			return hDoAssign( ctx, expr )
 		end if
+
+		'' try to assign it (do a shallow copy)
+		return hDoAssign( ctx, expr )
 	end if
 
 	dim as integer parenth = TRUE, comma = FALSE
@@ -471,8 +488,21 @@ private function hUDTInit( byref ctx as FB_INITCTX ) as integer
 			ctx.options or= FB_INIOPT_ISOBJ
 		end if
 
+		'' If up-casting is allowed, first try the initializer without
+		'' up-casting since this should try to match the intializer to
+		'' the best fit base.  Only if that fails then fall back on
+		'' using the first up-cast available.
+		var ok = FALSE
+		if( ( ctx.options and FB_INIOPT_NOUPCAST ) = 0 ) then
+			ctx.options or= FB_INIOPT_NOUPCAST
+			ok = hArrayInit( ctx, TRUE )
+			ctx.options and= not FB_INIOPT_NOUPCAST
+		else
+			ok = hArrayInit( ctx, TRUE )
+		end if
+
 		'' element assignment failed?
-		if( hArrayInit( ctx, TRUE ) = FALSE ) then
+		if( ok = FALSE ) then
 			'' not first or nothing passed back?
 			if( (fld <> first) or (ctx.init_expr = NULL) ) then
 				errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
@@ -609,47 +639,23 @@ function cInitializer _
 
 	if( symbIsVar( sym ) ) then
 		is_local = symbIsLocal( sym )
+
 	'' param, struct/class field or anon-udt
 	else
 		is_local = FALSE
 	end if
 
 	'' track recursion in to cInitializer() using a stack
-	'' we need to know here if we should allow upcasting or not
-
 	ctx.last_ctx = top_ctx
 	top_ctx = @ctx
 
 	'' set-up our current ctx
-
 	ctx.options = options
 	ctx.sym = sym
 	ctx.dimension = -1
 	ctx.init_expr = NULL
 	ctx.rec_cnt = 0
 	hUpdateContextDtype( ctx, dtype, subtype )
-
-	'' When to allow up-casting?
-	'' [x] top level -> allow up-casting
-	'' [x] nested UDT initialization -> do not allow up-casting
-	'' [ ] array element initialization -> allow up-casting
-	'' [x] NEW() -> allow up-casting
-
-	'' No override in options?
-	if( (options and FB_INIOPT_NOUPCAST) = 0 ) then
-
-		'' top-level initialization? allow upcasting
-		if( ctx.last_ctx = NULL ) then
-			ctx.options and= not FB_INIOPT_NOUPCAST
-
-		'' up-casting not explicitly enabled?
-		elseif( (options and FB_INIOPT_UPCAST) = 0 ) then
-
-			'' then anything else, assume no up-casting
-			ctx.options or= FB_INIOPT_NOUPCAST
-
-		end if
-	end if
 
 	ctx.tree = astTypeIniBegin( ctx.dtype, ctx.subtype, is_local, symbGetOfs( sym ) )
 

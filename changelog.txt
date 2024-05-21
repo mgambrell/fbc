@@ -1,10 +1,45 @@
+Version 1.10.1
+
+[changed]
+- rtlib: printf format specifier, use 'll' instead of 'I64' if building for ucrt or mingw-w64's stdio implementation (for newer gcc versions and c std)
+- gcc backend: use 'char' types for zstring instead of 'uint8' to avoid warnings in newer gcc 11+
+- release: update to build libffi 3.4.4 - this is needed to work with newer mingw-w64 based toolchains for gcc 11.x and up
+- emscripten/fbc: in debug version of fbc (__FB_DEBUG__<>0) allow wchar conversion on win32 host to allow building and testing of the test-suite 
+- github #421: fbc: win32/win64: pass '-fno-ident' to gcc to help prevent identification strings from accumulating in the final binary
+- updated bindings: PostgreSQL to 14.0
+- updated bindings: sqlite to 3.39.4
+- updated bindings: curl to 7.85.0
+- updated bindings: BASS to 2.4.17.0
+
+[added]
+- release: add recipes for building fbc distros using gcc-11.2 and gcc-12.2 Mingw-w64 project toolchains
+- release: add recipe for building fbc distros using winlibs-gcc-11.2/3/4 toolchain
+- fbc: '-fbgfx' command line option to link against correct libfbgfx variant, for platforms (emscripten) where it's not automatic due to missing objinfo support
+- basic-macros: better support for zstring and wstring conversion in evaluation of compile time arguments in __fb_query_symbol__, __fb_arg_extract__, __fb_iif__
+- added bindings: MariaDB 3.3.1
+
+[fixed]
+- sf.net #982: Array descriptors emitted incorrectly in gcc backend
+- gas64: emit debug information for statics
+- gas64: handle #inf's and NaN's in float comparisons 
+- unable to set opengl scaling to 1 after initial screen mode - previously: logic error in the driver code prevented the scaling from being set to 1
+- emscripten: fbc created faulty static libraries (it called ar instead of emar)
+- fbc: emscripten: wstring was broken because sizeof(wstring) was 2 rather than 4
+- emscripten: non-graphical programs will now run under node.js. Use -x output.js to produce a .js rather than an .html
+- rtlib: emscripten: CURDIR and EXEPATH always returned ""
+- emscripten/fbc: -sASYNCIFY wasn't passed to emcc at link-time as needed by recent Emscripten
+- sf.net #993: ignore (parse) single line comments for macros invoked with optional parentheses instead of passing as an argument to macro
+- sf.net #994: Bad handling of macro argument evaluation - reset file pointers to previous context after evaluating arguments in __fb_query_symbol__, __fb_eval__, __fb_arg_extract__, __fb_iif__, and releasing lexer context
+- sf.net #996: fbc null pointer access testing defined(UDT.cast)
+
+
 Version 1.10.0
 
 [changed]
 - gcc: '-funwind-tables' enabled on 64-bit targets for stack unwinding (adeyblue)
 - fbc: '--eh-frame-hdr' for linking on 64-bit nix targets for stack unwinding (adeyblue)
 - x86: arch 686 by default instead of 486 (SARG)
-- x86: arch 586 by default instead of 586 on DOS
+- x86: arch 586 by default instead of 486 on DOS
 - asm backend: only with 686 arch, use of fcomi(p) to avoid slower instructions and also less code (SARG)
 - fbc: #DUMP <expr> and #ODUMP <expr> pragmas only available in debug version of fbc
 - inc/fbmath.bi renamed to inc/fbprng.bi
@@ -20,7 +55,7 @@ Version 1.10.0
 - gfxlib2: store alpha from source to destination when blending alpha primitives in MMX blender to match C blender
 - makefile: internal rename (TARGET_PRFEX => BUILD_PREFIX) and conditionally set the library and object directories (default is still based on TARGET)
 - fbc: dos: set DXE_LD_LIBRARY_PATH environment variable when calling DXE3GEN
-- release: target DOS gcc 9.3.0 and bin utils 2.30 for next release
+- release: target DOS gcc 9.3.0 and binutils 2.35.1 for next release
 - Unix GETMOUSE() under TERM=linux now requires libgpm 1.20.4 or higher (libgpm.so.2), instead of the older libgpm.so.1 versions. (for compatibility with modern Debian/Ubuntu versions, and probably other distros, since 2008)
 - gas64 : SGN type is INTEGER for whole numbers instead LONG
 - fbc: thiscall calling convention default for extern "c++" / win32 / x86 / non-static member procedures
@@ -29,6 +64,10 @@ Version 1.10.0
 - fbc: Improve handling of closing parenthesis in first argument of a procedure call for some expressions (sf.net # 468). If there is no leading parenthesis, then there should be no ambiguity that the procedure is being invoked without the parentheses
 - fbc: remove #pragma push( lookup108 ) to use symbol lookup method from fbc-1.08.x and earlier on unqualified symbol names - it was crutch for fb 1.09.0 to help with testing and transition to better lookups
 - fbc: passing byval constructor preference: prefer A.constructor( B ) instead of of B.operator CAST() as A + A.constructor() when passing UDT by value - this is to fix some inconsistencies in the rules when converting by construction one type to another
+- fbc: only up-cast initializers when needed.  New behaviour is to try matching initializers without up-casting before matching with up-casting.
+- fbc: don't join operators separated by white space.  Previously, '<' + '=', '<' + '>', '=' + '>', and '-' + '>' were joined together even if separated by whitespace.
+- fbc: don't skip whitespace between decimal point and digit. Previously, '.' + '0..9' floating point literals were allowed to be separated by whitespace.
+- gfxlib2: gfx_dos drivers initialize the internal dirty array based on scanline size
 
 [added]
 - gas/gas64: '.cif_sections' and '.cif_' directives for stack unwinding (adeyblue)
@@ -49,15 +88,22 @@ Version 1.10.0
 - gfxlib2: add FB.GET_SCANLINE_SIZE to fbgfx.bi and ScreenControl() to get current internal scan line size multiplier
 - gfxlib2: SCREENCONTROL: add getters for GL parameters - new GET_GL_* constants in fbgfx.bi
 - fbc: allow a TYPE or UNION to be declared inside another TYPE or UNION to allow declaration of nested named types.  Support c++ name mangling parameters of named nested types.  Support definition of variables declared in a named nested type.
-- Name mangling for c++ 'char' through BYTE/UBYTE parameters using the form "[unsigned] byte alias "char".  Data type size is still 8 byte signed/unsigned from fbc side, but will mangled as 'char'; neither signed nor unsigned for the c++ side.
+- Name mangling for c++ 'char' through BYTE/UBYTE parameters using the form "[unsigned] byte alias "char".  Data type size is still 8 byte signed/unsigned from fbc side, but will be mangled as 'char'; neither signed nor unsigned for the c++ side.
 - Support 'SOURCE_DATE_EPOCH' environment variable for controlling the instrinsic __DATE__, __DATE_ISO__, __TIME__ macros.  This in turn controls __FB_BUILD_DATE__ and __FB_BUILD_DATE_ISO__ macros when building the compiler.  Report error message on malformed values.
 - fbc -nolib a,b,c command line option for selectively excluding specific libraries when linking (more fine-grained control than -nodeflibs, and not only for default libraries)
 - fbc will restart the parser when #cmdline "-mt" is used or usage of any threaded functions automatically enable -mt.  This allows the compiler to parse the current module from the beginning and process any __FB_MT__ checks.
 - fbc: __fastcall support for gcc/gas 32-bit x86 - fbc passes first and second integer arguments in ECX and EDX registers respectively, caller cleans up stack.
-- fbc: __FB_QUERY_SYMBOL__( what, sym ) built-in macro for querying fbc symbol internals.  Added fbc-int/symbol.bi (Work in progress).
-- add '-z no-retinflts' command line option for code generation.  This option disables returning some structures (types) in floating point registers.  This is a work-around for different handling of structs returned by value on different tool chains / targets.
+- fbc: __FB_QUERY_SYMBOL__( what, sym ) built-in macro for querying fbc symbol internals.  Added fbc-int/symbol.bi.
+- add '-z retinflts' command line option for code generation.  This option enables returning some structures (types) in floating point registers.  This is a work-around for different handling of structs returned by value on different tool chains / targets.
 - fbgfx.bi: add private function fb.__pixels() to return a pointer to the image data (paul doe)
 - fbc: add command line option and warning '-w upcast' to warn when up-casting would discard initializers
+- fbc headers: add ./inc/fblimits.bi for minimum and maximum value constants - for example fb.MIN_VALUE_INTEGER and fb.MAX_VALUE_INTEGER
+- In normal build of fbc, try to automatically use gcc to query the search path for a std c++ library.  This helps with dependency for tests/cpp and for some users that want to interop with c++
+- Add  makefile option DISABLE_STDCXX_PATH to disable using gcc to search for some c++ library path
+- fbc: allow typename.member symbol checks for #ifdef / #ifndef / defined() where member can be a data field, static data field, nested type, constructor, destructor, property, operator (self-assignment, new, new[], delete, delete[], let, cast, for, step, next), or member procedure.
+- rtlib: dos: add "__fb_dos_no_dpmi_yield" variable to control calling "__dpmi_yield()" and prevent a crash under some dos extenders in dosbox
+- fbc: PROCPTR( UDT.member [, ANY|SUB|FUNCTION ...] ) to get a procedure pointer for type member procedures.  If the member is abstract, then return 0 (null function pointer of the member procedure's call signature)
+- fbc: PROCPTR( UDT.member [, VIRTUAL ANY|SUB|FUNCTION ...] ) to get the zero based index in the virtual table.  If there is no virtual table entry (or no virtual table at all) then return the special value of -1
 
 [fixed]
 - gas64: missing restoring of use of one virtual register on sqr for float (SARG)
@@ -112,6 +158,15 @@ Version 1.10.0
 - fbgfx.bi: fix structures and declarations for #lang "qb" (paul doe)
 - gas64: fix structures passed by upcasting (SARG)
 - fbc: discard assignments and constructor calls in initializers that would write outside of the target when emitting initializer lists - previously, up-casted initializers were writing beyond the limits of the target and trashing memory
+- fix regression due to previous change on sf.net #917: optimization of 'm += s'.  The optimization failed to consider 's = s + expr' where expr might contain 's'.  In such a case, the optimization cannot be applied.
+- fbc: basic-macros: improve the handling of optional parens in function like macros by ending a macro argument list on the number of arguments expected (non-variadic macros only).
+- fbc: bad error recovery after overloaded operator [] caused compiler crash, for example if overloaded operator [] is found but can't be used due to mixing const and non-const types, or invalid members
+- fbc: improve error message 215 to indicate that only static members can be accessed from parameter intializers as well as static functions
+- fbc: #cmdline "-c ..." needs to restart parser since code generation is affected.  The implicit main was being emitted even when '-c' was give in #cmdline and was working differently than when '-c' given on the actual command line. 
+- fbc: extend lifetime of temporary variables in WITH TYPE(...) expressions to the END WITH statement
+- fbc: #cmdline "-r -rr -R -RR -o objfile ..." needs to restart the parser and handle changes in keeping the ASM file.  In the case of '-o objfile' a major restart is needed since some initialization of filenames is done before parsing starts.  By default the temporary ASM file was being kept even if #cmdline options indicate to keep it.
+- sf.net #569: gfxlib2: GetMouse/SetMouse scaling problem in QB modes Screen 2 & 8 - adjust GetMouse/SetMouse by internal scanline_size
+- fbc: fbc: fix bad error recovery on BYREF intializer.  'Dim Byref As UDT u = UDT()' would case compiler crash if UDT constructor argument optional
 
 
 Version 1.09.0
@@ -269,7 +324,7 @@ Version 1.08.0
 - Change overload to SCREENINFO( byref as long = 0, byref as long = 0, byref as long = 0, byref as long = 0, byref as long = 0, byref as long = 0, byref as string = "" )
 - Add overload for SCREENINFO( byref as longint, byref as longint, byref as longint = 0, byref as longint = 0, byref as longint = 0, byref as longint = 0, byref as string = "" )
 - Add new gflib2 API's fb_GfxImageInfo32() and fb_GfxImageInfo64()
-- Change overload to IMAGEINFO( byval as const any ptr, byref as long = 0, byref as long = 0, byref as long = 0, byref as long = 0, byref as any ptr = 0, byref as longint = 0 ) as long
+- Change overload to IMAGEINFO( byval as const any ptr, byref as long = 0, byref as long = 0, byref as long = 0, byref as long = 0, byref as any ptr = 0, byref as long = 0 ) as long
 - Add overload for IMAGEINFO( byval as const any ptr, byref as longint, byref as longint, byref as longint = 0, byref as longint = 0, byref as any ptr = 0, byref as longint = 0 ) as long
 - Add new gfxlib2 API's fb_GfxControl_i32() and fb_GfxControl_i64()
 - Change overload for SCREENCONTROL( byval as const long, byref as long = -2147483648, byref as long = -2147483648, byref as long = -2147483648, byref as long = -2147483648 )

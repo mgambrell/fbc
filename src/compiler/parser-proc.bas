@@ -1123,7 +1123,7 @@ function cProcHeader _
 		idopt = FB_IDOPT_ISDECL or FB_IDOPT_SHOWERROR or FB_IDOPT_ALLOWSTRUCT
 		select case( tk )
 		case FB_TK_OPERATOR
-			idopt or= FB_IDOPT_ISOPERATOR
+			idopt or= FB_IDOPT_ALLOWOPERATOR
 		case FB_TK_CONSTRUCTOR, FB_TK_DESTRUCTOR
 			idopt or= FB_IDOPT_DONTCHKPERIOD
 		end select
@@ -1689,7 +1689,7 @@ function cProcHeader _
 				head_proc = symbFindOpOvlProc( op, head_proc, proc )
 			case else
 				head_proc = symbFindOverloadProc( head_proc, proc, _
-						iif( is_get, FB_SYMBLOOKUPOPT_PROPGET, FB_SYMBLOOKUPOPT_NONE ) )
+						iif( is_get, FB_SYMBFINDOPT_PROPGET, FB_SYMBFINDOPT_NONE ) )
 			end select
 			pattrib or= FB_PROCATTRIB_OVERLOADED
 		end if

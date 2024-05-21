@@ -3,7 +3,7 @@
 
 const FB_VER_MAJOR  = "1"
 const FB_VER_MINOR  = "10"
-const FB_VER_PATCH  = "0"
+const FB_VER_PATCH  = "1"
 const FB_VERSION    = FB_VER_MAJOR + "." + FB_VER_MINOR + "." + FB_VER_PATCH
 const FB_BUILD_DATE = __DATE__
 const FB_BUILD_DATE_ISO = __DATE_ISO__
@@ -104,14 +104,14 @@ enum FB_COMPOPT
 	FB_COMPOPT_EXPORT               '' boolean: export all symbols declared as EXPORT?
 	FB_COMPOPT_MSBITFIELDS          '' boolean: use M$'s bitfields packing?
 	FB_COMPOPT_MULTITHREADED        '' boolean: -mt
-	FB_COMPOPT_GFX                  '' boolean: -gfx (whether gfxlib should be linked)
+	FB_COMPOPT_FBGFX                '' boolean: -fbgfx (whether libfbgfx should be linked)
 	FB_COMPOPT_PIC                  '' boolean: -pic (whether to use position-independent code)
 	FB_COMPOPT_STACKSIZE            '' integer
 	FB_COMPOPT_OBJINFO              '' boolean: write/read .fbctinf sections etc.?
 	FB_COMPOPT_SHOWINCLUDES         '' boolean: -showincludes
 	FB_COMPOPT_MODEVIEW             ''__FB_GUI__
 	FB_COMPOPT_NOCMDLINE            '' boolean: -z nocmdline, disable #cmdline directives
-	FB_COMPOPT_NORETURNINFLTS       '' boolean: -z no-returninflts, disable returning some structs in floating point registers
+	FB_COMPOPT_RETURNINFLTS         '' boolean: -z retinflts, enable returning some structs in floating point registers
 
 	FB_COMPOPTIONS
 end enum
@@ -313,14 +313,14 @@ type FBCMMLINEOPT
 	export          as integer              '' export all symbols declared as EXPORT (default = true)
 	msbitfields     as integer              '' use M$'s bitfields packing
 	multithreaded   as integer              '' link against thread-safe runtime library (default = false)
-	gfx             as integer              '' Link against gfx library (default = false)
+	fbgfx           as integer              '' Link against gfx library (default = false)
 	pic             as integer              '' Whether to use position-independent code (default = false)
 	stacksize       as integer
 	objinfo         as integer
 	showincludes    as integer
 	modeview        as FB_MODEVIEW
 	nocmdline       as integer              '' dissallow #cmdline directive? (default = false)
-	noreturninflts  as integer              '' disable returning some structs in floating point registers
+	returninflts    as integer              '' enable returning some structs in floating point registers
 end type
 
 '' features allowed in the selected language
@@ -615,6 +615,15 @@ declare function fbGetBackendValistType () as FB_CVA_LIST_TYPEDEF
 #else
 	#define INT_BOOL_TO_STR(y_) str(y_)
 	#define INT_BOOL_TO_WSTR(y_) wstr(y_)
+#endif
+
+
+'' helper macro to assert at compile time that the current
+'' procedure matches a specific function pointer callback
+#if __FB_VERSION__ >= "1.09.0"
+#define ASSERT_PROC_DECL( cb_type ) #assert( typeof( procptr(__FUNCTION_NQ__) ) = typeof( cb_type ) )
+#else
+#define ASSERT_PROC_DECL( cb_type )
 #endif
 
 #endif '' __FB_BI__

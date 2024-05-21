@@ -317,6 +317,57 @@ private function hMacro_getArgW( byval argtb as LEXPP_ARGTB ptr, byval num as in
 
 end function
 
+#define hIsTokenEndOfStream()  ((lexGetToken() = FB_TK_EOL) orelse (lexGetToken() = FB_TK_EOF))
+
+private sub hArgAppendLFCHAR( )
+	'' Add an end of expression marker so that the parser
+	'' doesn't read past the end of the expression text
+	'' by appending an LFCHAR to the end of the expression
+	'' It would be better to use the explicit EOF character,
+	'' but we can't appened an extra NUL character to a zstring
+
+	'' ascii
+	if( env.inf.format = FBFILE_FORMAT_ASCII ) then
+		DZstrConcatAssign( lex.ctx->deftext, LFCHAR )
+		lex.ctx->defptr = lex.ctx->deftext.data
+		lex.ctx->deflen += len( LFCHAR )
+	'' unicode
+	else
+		DWstrConcatAssignA( lex.ctx->deftextw, LFCHAR )
+		lex.ctx->defptrw = lex.ctx->deftextw.data
+		lex.ctx->deflen += len( LFCHAR )
+	end if
+end sub
+
+private sub hArgInsertArgA( byval arg as zstring ptr )
+	'' ascii
+	if( env.inf.format = FBFILE_FORMAT_ASCII ) then
+		DZstrAssign( lex.ctx->deftext, *arg )
+		lex.ctx->defptr = lex.ctx->deftext.data
+		lex.ctx->deflen += len( *arg )
+	'' unicode
+	else
+		DWstrAssignA( lex.ctx->deftextw, *arg )
+		lex.ctx->defptrw = lex.ctx->deftextw.data
+		lex.ctx->deflen += len( *arg )
+	end if
+end sub
+
+private sub hArgInsertArgW( byval arg as wstring ptr )
+	'' ascii
+	if( env.inf.format = FBFILE_FORMAT_ASCII ) then
+		DZstrAssignW( lex.ctx->deftext, *arg )
+		lex.ctx->defptr = lex.ctx->deftext.data
+		lex.ctx->deflen += len( *arg )
+	'' unicode
+	else
+		DWstrAssign( lex.ctx->deftextw, *arg )
+		lex.ctx->defptrw = lex.ctx->deftextw.data
+		lex.ctx->deflen += len( *arg )
+	end if
+end sub
+
+
 private function hMacro_EvalZ( byval arg as zstring ptr, byval errnum as integer ptr ) as string
 
 	'' the expression should have already been handled in hLoadMacro|hLoadMacroW
@@ -337,25 +388,14 @@ private function hMacro_EvalZ( byval arg as zstring ptr, byval errnum as integer
 		'' - text to expand is to be loaded in LEX.CTX->DEFTEXT[W]
 		'' - use the parser to build an AST for the literal result
 
-		lexPushCtx()
-		lexInit( FALSE, TRUE )
+		lexPushCtx( )
+		lexInit( LEX_TKCTX_CONTEXT_EVAL )
 
 		'' prevent cExpression from writing to .pp.bas file
 		lex.ctx->reclevel += 1
 
-		DZstrAssign( lex.ctx->deftext, *arg )
-		lex.ctx->defptr = lex.ctx->deftext.data
-		lex.ctx->deflen += len( *arg )
-
-		'' Add an end of expression marker so that the parser
-		'' doesn't read past the end of the expression text
-		'' by appending an LFCHAR to the end of the expression
-		'' It would be better to use the explicit EOF character,
-		'' but we can't appened an extra NUL character to a zstring
-
-		DZstrConcatAssign( lex.ctx->deftext, LFCHAR )
-		lex.ctx->defptr = lex.ctx->deftext.data
-		lex.ctx->deflen += len( LFCHAR )
+		hArgInsertArgA( arg )
+		hArgAppendLFCHAR()
 
 		dim expr as ASTNODE ptr = cExpression( )
 		var errmsg = FB_ERRMSG_OK
@@ -367,13 +407,13 @@ private function hMacro_EvalZ( byval arg as zstring ptr, byval errnum as integer
 				DZStrAssign( res, astConstFlushToStr( expr ) )
 
 				'' any tokens still in the buffer? cExpression() should have used them all
-				if( lexGetToken( ) <> FB_TK_EOL ) then
+				if( not hIsTokenEndOfStream() ) then
 					errmsg = FB_ERRMSG_SYNTAXERROR
 				end if
 			elseif( astIsConstant( expr ) ) then
 				DZStrAssign( res, symbGetConstStrAsStr( expr->sym ) )
 				'' any tokens still in the buffer? cExpression() should have used them all
-				if( lexGetToken( ) <> FB_TK_EOL ) then
+				if( not hIsTokenEndOfStream() ) then
 					errmsg = FB_ERRMSG_SYNTAXERROR
 				end if
 				astDelTree( expr )
@@ -388,7 +428,7 @@ private function hMacro_EvalZ( byval arg as zstring ptr, byval errnum as integer
 
 		lex.ctx->reclevel -= 1
 
-		lexPopCtx()
+		lexPopCtx( )
 
 		if( errmsg <> FB_ERRMSG_OK ) then
 			errReportEx( errmsg, *arg )
@@ -424,25 +464,14 @@ private function hMacro_EvalW( byval arg as wstring ptr, byval errnum as integer
 		'' - text to expand is to be loaded in LEX.CTX->DEFTEXT[W]
 		'' - use the parser to build an AST for the literal result
 
-		lexPushCtx()
-		lexInit( FALSE, TRUE )
+		lexPushCtx( )
+		lexInit( LEX_TKCTX_CONTEXT_EVAL )
 
 		'' prevent cExpression from writing to .pp.bas file
 		lex.ctx->reclevel += 1
 
-		DWstrAssign( lex.ctx->deftextw, *arg )
-		lex.ctx->defptrw = lex.ctx->deftextw.data
-		lex.ctx->deflen += len( *arg )
-
-		'' Add an end of expression marker so that the parser
-		'' doesn't read past the end of the expression text
-		'' by appending an LFCHAR to the end of the expression
-		'' It would be better to use the explicit EOF character,
-		'' but we can't appened an extra NUL character to a zstring
-
-		DWstrConcatAssign( lex.ctx->deftextw, LFCHAR )
-		lex.ctx->defptrw = lex.ctx->deftextw.data
-		lex.ctx->deflen += len( LFCHAR )
+		hArgInsertArgW( arg )
+		hArgAppendLFCHAR()
 
 		dim expr as ASTNODE ptr = cExpression( )
 		var errmsg = FB_ERRMSG_OK
@@ -454,13 +483,13 @@ private function hMacro_EvalW( byval arg as wstring ptr, byval errnum as integer
 				DWStrAssign( res, astConstFlushToWstr( expr ) )
 
 				'' any tokens still in the buffer? cExpression() should have used them all
-				if( lexGetToken( ) <> FB_TK_EOL ) then
+				if( not hIsTokenEndOfStream() ) then
 					errmsg = FB_ERRMSG_SYNTAXERROR
 				end if
 			elseif( astIsConstant( expr ) ) then
 				DWStrAssign( res, symbGetConstStrAsWstr( expr->sym ) )
 				'' any tokens still in the buffer? cExpression() should have used them all
-				if( lexGetToken( ) <> FB_TK_EOL ) then
+				if( not hIsTokenEndOfStream() ) then
 					errmsg = FB_ERRMSG_SYNTAXERROR
 				end if
 				astDelTree( expr )
@@ -475,7 +504,7 @@ private function hMacro_EvalW( byval arg as wstring ptr, byval errnum as integer
 
 		lex.ctx->reclevel -= 1
 
-		lexPopCtx()
+		lexPopCtx( )
 
 		if( errmsg <> FB_ERRMSG_OK ) then
 			errReportEx( errmsg, *arg )
@@ -981,11 +1010,19 @@ enum FB_QUERY_SYMBOL explicit
 	symbclass  = &h0000     '' return the symbol's class as FB_SYMBCLASS
 	datatype   = &h0001     '' return symbol's type as FB_DATATYPE
 	dataclass  = &h0002     '' return the symbol's data class as FB_DATACLASS
-
+	typename   = &h0003     '' return the typename as text
+	typenameid = &h0004     '' return the typename as text with specical characters replaced with '_'
+	mangleid   = &h0005     '' return the decorated (mangled) type name (WIP)
+	exists     = &h0006     '' return if the symbol name / identifier is exists
 	querymask  = &h00ff     '' mask for query values
 
 	'' filters
-	typeinfo   = &h0100     '' use TYPEOF/expression only when parsing the symbol/expression
+	'' if no filter is given, and filtermask is zero, then the default methods
+	'' are used for symbol lookup.  If filtermask is non-zero, then only use
+	'' the specified methods for symbol lookup
+
+	identifier = &h0100     '' use identifier & type name symbol lookups
+	typeofexpr = &h0200     '' use TYPEOF/expression
 
 	filtermask = &hff00     '' mask for filter values
 
@@ -1014,42 +1051,56 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 			dim as FB_DATATYPE dtype = FB_DATATYPE_INVALID
 			dim as integer is_fixlenstr, retry = FALSE
 			dim as longint lgt
-			dim as FBSYMBOL ptr base_parent = any, sym = NULL, subtype = NULL
-			dim as FBSYMCHAIN ptr chain_ = any
+			dim as FBSYMBOL ptr sym = NULL, subtype = NULL
+			dim as long queryvalue = whatvalue and FB_QUERY_SYMBOL.querymask
+			dim as long filtervalue = whatvalue and FB_QUERY_SYMBOL.filtermask
+
 			var errmsg = FB_ERRMSG_OK
 
 			'' create a lightweight context push
-			lexPushCtx()
-			lexInit( FALSE, TRUE )
+			lexPushCtx( )
+			lexInit( LEX_TKCTX_CONTEXT_EVAL )
 
 			'' prevent cExpression from writing to .pp.bas file
 			lex.ctx->reclevel += 1
 
-			DZstrAssign( lex.ctx->deftext, *sexpr )
-			lex.ctx->defptr = lex.ctx->deftext.data
-			lex.ctx->deflen += len( *sexpr )
+			hArgInsertArgA( sexpr )
+			hArgAppendLFCHAR()
 
-			if( (whatvalue and FB_QUERY_SYMBOL.typeinfo) = 0 ) then
+			'' if filtervalue is zero then set the default methods to use for
+			'' look-up depending on what we are looking for
+			if( filtervalue = 0 ) then
+				select case queryvalue
+				case FB_QUERY_SYMBOL.typename, _
+				     FB_QUERY_SYMBOL.typenameid, _
+				     FB_QUERY_SYMBOL.mangleid, _
+				     FB_QUERY_SYMBOL.exists
 
-				'' Try a lookup of the symbol and ideally suppressing all errors.  We
+					filtervalue or= FB_QUERY_SYMBOL.identifier
+
+				'' case FB_QUERY_SYMBOL.symbclass, _
+				''      FB_QUERY_SYMBOL.dataclass, _
+				''      FB_QUERY_SYMBOL.datatype
+				case else
+					filtervalue or= FB_QUERY_SYMBOL.identifier or FB_QUERY_SYMBOL.typeofexpr
+
+				end select
+			end if
+
+			'' identifier filter?
+			if( (filtervalue and FB_QUERY_SYMBOL.identifier) <> 0 ) then
+
+				'' Try a lookup of the symbol and ideally suppress all errors.  These
 				'' will never be used as for any access or expression in emitted code
 				'' so we should try to be as persmissive as possible.
 
 				select case lexGetClass( )
-				case FB_TKCLASS_IDENTIFIER, FB_TKCLASS_KEYWORD, FB_TKCLASS_QUIRKWD
-					base_parent = cParentId( FB_IDOPT_DONTCHKPERIOD )
-					if( base_parent = NULL ) then
-						chain_ = cIdentifier( base_parent, FB_IDOPT_ISDEFN or FB_IDOPT_ALLOWSTRUCT )
-						if( chain_ ) then
-							sym = chain_->sym
-						end if
-					else
-						chain_ = symbLookupAt( base_parent, lexGetText( ), FALSE, FALSE )
-						if( chain_ ) then
-							sym = chain_->sym
-						else
-							sym = base_parent
-						end if
+				case FB_TKCLASS_IDENTIFIER, FB_TKCLASS_KEYWORD, _
+				     FB_TKCLASS_QUIRKWD, FB_TKCLASS_OPERATOR
+
+					sym = cIdentifierOrUDTMember( )
+					if( sym = NULL ) then
+						retry = TRUE
 					end if
 				end select
 
@@ -1061,8 +1112,9 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 					case FB_SYMBCLASS_KEYWORD
 						dtype = symbGetFullType( sym )
 						if( dtype = FB_DATATYPE_INVALID ) then
-							select case (whatvalue and FB_QUERY_SYMBOL.querymask)
-							case FB_QUERY_SYMBOL.symbclass
+							select case queryvalue
+							case FB_QUERY_SYMBOL.symbclass, _
+							     FB_QUERY_SYMBOL.exists
 								lexSkipToken( )
 							case else
 								sym = NULL
@@ -1075,9 +1127,14 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 						lexSkipToken( )
 						dtype = symbGetFullType( sym )
 						subtype = sym
-						cUdtTypeMember( dtype, subtype, lgt, is_fixlenstr, sym )
+						'' '.'?
+						if( lexGetToken( ) = CHAR_DOT ) then
+							cUdtTypeMember( dtype, subtype, lgt, is_fixlenstr, sym )
+						end if
 					case else
 						lexSkipToken( )
+						dtype = symbGetFullType( sym )
+						subtype = symbGetSubtype( sym )
 					end select
 				end if
 
@@ -1088,7 +1145,7 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 				'' because there is more, try as typeof.
 
 				'' not the end of 'sym'? retry as TYPEOF
-				if( lexGetToken( ) <> FB_TK_EOF ) then
+				if( not hIsTokenEndOfStream() ) then
 					retry = TRUE
 				end if
 
@@ -1096,27 +1153,29 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 					sym = NULL
 
 					'' reset the current lexer context and refresh the text to parse.
-					lexInit( FALSE, TRUE )
+					'' !!!TODO!!! - probably more efficient with some kind of 'lexReinit()' function
+					lexPopCtx( )
+					lexPushCtx( )
+					lexInit( LEX_TKCTX_CONTEXT_EVAL )
 
-					DZstrAssign( lex.ctx->deftext, *sexpr )
-					lex.ctx->defptr = lex.ctx->deftext.data
-					lex.ctx->deflen += len( *sexpr )
-				end if
-
-				if( sym ) then
-					dtype = symbGetFullType( sym )
-					subtype = symbGetSubtype( sym )
+					hArgInsertArgA( sexpr )
+					hArgAppendLFCHAR()
 				end if
 
 			end if
 
-			'' no sym? try TYPEOF( sym ) ...
-			if( sym = NULL ) then
-				cTypeOf( dtype, subtype, lgt, is_fixlenstr, sym )
+			'' typeof/expression filter?
+			if( (filtervalue and FB_QUERY_SYMBOL.typeofexpr) <> 0 ) then
+
+				'' no sym? try TYPEOF( sym ) ...
+				if( sym = NULL ) then
+					cTypeOf( dtype, subtype, lgt, is_fixlenstr, sym )
+				end if
+
 			end if
 
 			'' return results
-			select case (whatvalue and FB_QUERY_SYMBOL.querymask)
+			select case queryvalue
 			case FB_QUERY_SYMBOL.symbclass
 				if( sym ) then
 					res = str( symbGetClass( sym ) )
@@ -1129,14 +1188,41 @@ private function hDefQuerySymZ_cb( byval argtb as LEXPP_ARGTB ptr, byval errnum 
 				res = str( dtype )
 			case FB_QUERY_SYMBOL.dataclass
 				res = str( typeGetClass( dtype ) )
+			case FB_QUERY_SYMBOL.typename, FB_QUERY_SYMBOL.typenameid
+				res = ucase( symbTypeToStr( dtype, subtype, lgt, is_fixlenstr ) )
+				if( queryvalue = FB_QUERY_SYMBOL.typenameid ) then
+					hReplaceChar( res, asc(" "), asc("_") )
+					hReplaceChar( res, asc("."), asc("_") )
+					hReplaceChar( res, asc("("), asc("_") )
+					hReplaceChar( res, asc(")"), asc("_") )
+					hReplaceChar( res, asc("*"), asc("_") )
+				end if
+			case FB_QUERY_SYMBOL.mangleid
+				if( sym ) then
+					symbMangleType( res, dtype, sym )
+					symbMangleResetAbbrev( )
+				elseif( subtype ) then
+					symbMangleType( res, dtype, subtype )
+					symbMangleResetAbbrev( )
+				else
+					res = str(0)
+				end if
+			case FB_QUERY_SYMBOL.exists
+				res = str( sym <> NULL )
 			case else
 				*errnum = FB_ERRMSG_SYNTAXERROR
 				res = str( -1 )
 			end select
 
+			if( *errnum <> FB_ERRMSG_OK ) then
+				errReport( *errnum )
+				'' error recovery: skip until next line (in the buffer)
+				hSkipUntil( FB_TK_EOL, TRUE )
+			end if
+
 			lex.ctx->reclevel -= 1
 
-			lexPopCtx()
+			lexPopCtx( )
 
 		else
 			'' NUMARG isn't a number

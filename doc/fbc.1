@@ -1,4 +1,4 @@
-.TH FBC 1 "2022-05-29" "FreeBASIC Compiler 1.10.0" "FreeBASIC Compiler"
+.TH FBC 1 "2023-05-20" "FreeBASIC Compiler 1.10.1" "FreeBASIC Compiler"
 .SH NAME
 fbc \- The FreeBASIC compiler
 .SH DESCRIPTION
@@ -267,11 +267,11 @@ Don't use '__fastcall' calling convention
 \fB\-z fbrt\fR
 Link with 'fbrt' instead of 'fb' runtime library
 .TP
-\fB\-z no-retinflts\fR
-Disable #cmdline source directives
+\fB\-z retinflts\fR
+Enable returning some types in floating point registers
 .TP
 \fB\-z nocmdline\fR
-Disable returning some types in floating point registers
+Disable #cmdline source directives
 
 .SH ENVIRONMENT
 .IP AS
@@ -286,13 +286,13 @@ The full language specification and help is available in wiki format at
 .B 
 https://www.freebasic.net/wiki/
 .SH COPYRIGHT
-Copyright \(co 2004\-2022 The FreeBASIC Development Team
+Copyright \(co 2004\-2023 The FreeBASIC Development Team
 .br
 This is free software.  You may redistribute copies of it under the terms of
 the GNU General Public License <http://www.gnu.org/licenses/gpl.html>.
 There is NO WARRANTY, to the extent permitted by law.
 .SH BUGS
-Any bugs should be reported on the Sourceforge.net tracker located at http://www.sourceforge.net/projects/fbc
+Any bugs should be reported on the Sourceforge.net tracker located at https://www.sourceforge.net/projects/fbc/
 
 .SH AUTHOR
 This manpage written by Ebben Feagan (ebben.feagan@gmail.com)

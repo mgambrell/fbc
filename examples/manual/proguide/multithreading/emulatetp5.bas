@@ -1,9 +1,9 @@
-'' examples/manual/proguide/multithreading/criticalsectionfaq13-3.bas
+'' examples/manual/proguide/multithreading/emulatetp5.bas
 ''
 '' Example extracted from the FreeBASIC Manual
-'' from topic 'Critical Sections FAQ'
+'' from topic 'Emulate a TLS (Thread Local Storage) and a TP (Thread Pooling) feature'
 ''
-'' See Also: https://www.freebasic.net/wiki/wikka.php?wakka=ProPgMtCriticalSectionsFAQ
+'' See Also: https://www.freebasic.net/wiki/wikka.php?wakka=ProPgEmulateTlsTp
 '' --------
 
 Type ThreadInitThenMultiStart
@@ -13,7 +13,9 @@ Type ThreadInitThenMultiStart
 		Declare Sub ThreadStart()
 		Declare Sub ThreadStart(ByVal p As Any Ptr)
 		Declare Function ThreadWait() As String
+
 		Declare Property ThreadState() As UByte
+
 		Declare Destructor()
 	Private:
 		Dim As Function(ByVal p As Any Ptr) As String _pThread
@@ -101,7 +103,9 @@ Type ThreadPooling
 		Declare Sub PoolingSubmit(ByVal pThread As Function(ByVal As Any Ptr) As String, ByVal p As Any Ptr = 0)
 		Declare Sub PoolingWait()
 		Declare Sub PoolingWait(values() As String)
+
 		Declare Property PoolingState() As UByte
+
 		Declare Destructor()
 	Private:
 		Dim As Function(ByVal p As Any Ptr) As String _pThread0
@@ -141,7 +145,7 @@ End Sub
 
 Sub ThreadPooling.PoolingWait()
 	MutexLock(This._mutex)
-	While This._state <> 4
+	While (This._state And 11) > 0
 		CondWait(This._Cond1, This._mutex)
 	Wend
 	ReDim This._returnF(0)
@@ -151,7 +155,7 @@ End Sub
 
 Sub ThreadPooling.PoolingWait(values() As String)
 	MutexLock(This._mutex)
-	While This._state <> 4
+	While (This._state And 11) > 0
 		CondWait(This._Cond1, This._mutex)
 	Wend
 	If UBound(This._returnF) > 0 Then
@@ -168,7 +172,11 @@ Sub ThreadPooling.PoolingWait(values() As String)
 End Sub
 
 Property ThreadPooling.PoolingState() As UByte
-	Return This._state
+	If UBound(This._p) > 0 Then
+		Return 8 + This._state
+	Else
+		Return This._state
+	End If
 End Property
 
 Sub ThreadPooling._Thread(ByVal p As Any Ptr)
@@ -211,122 +219,169 @@ End Destructor
 
 '---------------------------------------------------
 
-Dim Shared As Double array(1 To 800000)  '' only used by the [For...Next] waiting loop in UserCode()
+Type ThreadDispatching
+	Public:
+		Declare Constructor(ByVal nbMaxSecondaryThread As Integer = 1, ByVal nbMinSecondaryThread As Integer = 0)
+		Declare Sub DispatchingSubmit(ByVal pThread As Function(ByVal As Any Ptr) As String, ByVal p As Any Ptr = 0)
+		Declare Sub DispatchingWait()
+		Declare Sub DispatchingWait(values() As String)
 
-Function UserCode (ByVal p As Any Ptr) As String
-	Dim As String Ptr ps = p
-	For I As Integer = 1 To 2
-		Print *ps;
-		For J As Integer = 1 To 800000
-			array(I) = Tan(I) * Atn(I) * Exp(I) * Log(I)  '' [For...Next] waiting loop not freeing any CPU resource
-		Next J
+		Declare Property DispatchingThread() As Integer
+		Declare Sub DispatchingState(state() As UByte)
+
+		Declare Destructor()
+	Private:
+		Dim As Integer _nbmst
+		Dim As Integer _dstnb
+		Dim As ThreadPooling Ptr _tp(Any)
+End Type
+
+Constructor ThreadDispatching(ByVal nbMaxSecondaryThread As Integer = 1, ByVal nbMinSecondaryThread As Integer = 0)
+	This._nbmst = nbMaxSecondaryThread
+	If nbMinSecondaryThread > nbMaxSecondaryThread Then
+		nbMinSecondaryThread = nbMaxSecondaryThread
+	End If
+	If nbMinSecondaryThread > 0 Then
+		ReDim This._tp(nbMinSecondaryThread - 1)
+		For I As Integer = 0 To nbMinSecondaryThread - 1
+			This._tp(I) = New ThreadPooling
+		Next I
+	End If
+End Constructor
+
+Sub ThreadDispatching.DispatchingSubmit(ByVal pThread As Function(ByVal As Any Ptr) As String, ByVal p As Any Ptr = 0)
+	For I As Integer = 0 To UBound(This._tp)
+		If (This._tp(I)->PoolingState And 11) = 0 Then
+			This._tp(I)->PoolingSubmit(pThread, p)
+			Exit Sub
+		End If
 	Next I
+	If UBound(This._tp) < This._nbmst - 1 Then
+		ReDim Preserve This._tp(UBound(This._tp) + 1)
+		This._tp(UBound(This._tp)) = New ThreadPooling
+		This._tp(UBound(This._tp))->PoolingSubmit(pThread, p)
+	ElseIf UBound(This._tp) >= 0 Then
+		This._tp(This._dstnb)->PoolingSubmit(pThread, p)
+		This._dstnb = (This._dstnb + 1) Mod This._nbmst
+	End If
+End Sub
+
+Sub ThreadDispatching.DispatchingWait()
+	For I As Integer = 0 To UBound(This._tp)
+		This._tp(I)->PoolingWait()
+	Next I
+End Sub
+
+Sub ThreadDispatching.DispatchingWait(values() As String)
+	Dim As String s()
+	For I As Integer = 0 To UBound(This._tp)
+		This._tp(I)->PoolingWait(s())
+		If UBound(s) >= 1 Then
+			If UBound(values) = -1 Then
+				ReDim Preserve values(1 To UBound(values) + UBound(s) + 1)
+			Else
+				ReDim Preserve values(1 To UBound(values) + UBound(s))
+			End If
+			For I As Integer = 1 To UBound(s)
+				values(UBound(values) - UBound(s) + I) = s(I)
+			Next I
+		End If
+	Next I
+End Sub
+
+Property ThreadDispatching.DispatchingThread() As Integer
+	Return UBound(This._tp) + 1
+End Property
+
+Sub ThreadDispatching.DispatchingState(state() As UByte)
+	If UBound(This._tp) >= 0 Then
+		ReDim state(1 To UBound(This._tp) + 1)
+		For I As Integer = 0 To UBound(This._tp)
+			state(I + 1) = This._tp(I)->PoolingState
+		Next I
+	End If
+End Sub
+
+Destructor ThreadDispatching()
+	For I As Integer = 0 To UBound(This._tp)
+		Delete This._tp(I)
+	Next I
+End Destructor
+
+'---------------------------------------------------
+
+Sub s(ByVal p As Any Ptr)
+	'' user task
+End Sub
+
+Function f(ByVal p As Any Ptr) As String
+	'' user task
 	Return ""
 End Function
 
-Dim As String s(0 To 31)
-For I As Integer = 0 To 15
-	s(I) = Str(Hex(I))
-Next I
-For I As Integer = 16 To 31
-	s(I) = Chr(55 + I)
-Next I
-
 '---------------------------------------------------
+'Time wasted when running a user task either by procedure calling or by various threading methods
+Print "Mean time wasted when running a user task :"
+Print "   either by procedure calling method,"
+Print "   or by various threading methods."
+Print
 
-Dim As ThreadInitThenMultiStart ts(0 To 31)
-Dim As ThreadPooling tp(0 To 31)
-
-'---------------------------------------------------
-
-#macro ThreadInitThenMultiStartSequence(nbThread)
 Scope
 	Dim As Double t = Timer
-	Print "   ";
-	For I As Integer = 0 To 32 - nbThread Step nbThread
-		For J As Integer = 0 To nbThread - 1
-			ts(J).ThreadInit(@UserCode, @s(I + J))
-			ts(J).ThreadStart()
-		Next J
-		For J As Integer = 0 To nbThread - 1
-			ts(J).ThreadWait()
-		Next J
+	For I As Integer = 1 To 1000000
+		s(0)
 	Next I
 	t = Timer - t
-	Print Using " : ####.## s"; t
+	Print Using "      - Using procedure calling method        : ###.###### ms"; t / 1000
+	Print
 End Scope
-#endmacro
 
-#macro ThreadPoolingSequence(nbThread)
 Scope
+	Dim As Any Ptr P
 	Dim As Double t = Timer
-	Print "   ";
-	For I As Integer = 0 To 32 - nbThread Step nbThread
-		For J As Integer = 0 To nbThread - 1
-			tp(J).PoolingSubmit(@UserCode, @s(I + J))
-		Next J
-	Next I
-	For I As Integer = 0 To nbThread - 1
-		tp(I).PoolingWait()
+	For I As Integer = 1 To 1000
+		p = ThreadCreate(@s)
+		ThreadWait(p)
 	Next I
 	t = Timer - t
-	Print Using " : ####.## s"; t
+	Print Using "      - Using elementary threading method     : ###.###### ms"; t
+	Print
 End Scope
-#endmacro
 
-'---------------------------------------------------
+Scope
+	Dim As ThreadInitThenMultiStart ts
+	Dim As Double t = Timer
+	ts.ThreadInit(@f)
+	For I As Integer = 1 To 10000
+		ts.ThreadStart()
+		ts.ThreadWait()
+	Next I
+	t = Timer - t
+	Print Using "      - Using ThreadInitThenMultiStart method : ###.###### ms"; t / 10
+End Scope
 
-Print "'ThreadInitThenMultiStart' with 1 secondary thread:"
-ThreadInitThenMultiStartSequence(1)
+Scope
+	Dim As ThreadPooling tp
+	Dim As Double t = Timer
+	For I As Integer = 1 To 10000
+		tp.PoolingSubmit(@f)
+	Next I
+	tp.PoolingWait()
+	t = Timer - t
+	Print Using "      - Using ThreadPooling method            : ###.###### ms"; t / 10
+End Scope
 
-Print "'ThreadPooling' with 1 secondary thread:"
-ThreadPoolingSequence(1)
+Scope
+	Dim As ThreadDispatching td
+	Dim As Double t = Timer
+	For I As Integer = 1 To 10000
+		td.DispatchingSubmit(@f)
+	Next I
+	td.DispatchingWait()
+	t = Timer - t
+	Print Using "      - Using ThreadDispatching method        : ###.###### ms"; t / 10
+End Scope
+
 Print
-
-'---------------------------------------------------
-
-Print "'ThreadInitThenMultiStart' with 2 secondary threads:"
-ThreadInitThenMultiStartSequence(2)
-
-Print "'ThreadPooling' with 2 secondary threads:"
-ThreadPoolingSequence(2)
-Print
-
-'---------------------------------------------------
-
-Print "'ThreadInitThenMultiStart' with 4 secondary threads:"
-ThreadInitThenMultiStartSequence(4)
-
-Print "'ThreadPooling' with 4 secondary threads:"
-ThreadPoolingSequence(4)
-Print
-
-'---------------------------------------------------
-
-Print "'ThreadInitThenMultiStart' with 8 secondary threads:"
-ThreadInitThenMultiStartSequence(8)
-
-Print "'ThreadPooling' with 8 secondary threads:"
-ThreadPoolingSequence(8)
-Print
-
-'---------------------------------------------------
-
-Print "'ThreadInitThenMultiStart' with 16 secondary threads:"
-ThreadInitThenMultiStartSequence(16)
-
-Print "'ThreadPooling' with 16 secondary threads:"
-ThreadPoolingSequence(16)
-Print
-
-'---------------------------------------------------
-
-Print "'ThreadInitThenMultiStart' with 32 secondary threads:"
-ThreadInitThenMultiStartSequence(32)
-
-Print "'ThreadPooling' with 32 secondary threads:"
-ThreadPoolingSequence(32)
-Print
-
 Sleep
-							
+					
